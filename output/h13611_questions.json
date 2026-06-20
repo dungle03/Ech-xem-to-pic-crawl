@@ -1,0 +1,63 @@
+[
+  {
+    "exam_code": "h13611",
+    "topic": 1,
+    "question_num": 20,
+    "question": "Statement 1: RAID 2.0+ is NOT based on traditional RAID technologies.\nStatement 2: RAID 2.0+ has excellent rebuild characteristics.",
+    "answers": [
+      "both TRUE https://forum.huawei.com/enterprise/en/introduction-to-raid-2-0/thread/667240608865075201-667213859733254144"
+    ],
+    "url": "https://www.examtopics.com/discussions/huawei/view/126460-exam-h13-611-topic-1-question-20-discussion/"
+  },
+  {
+    "exam_code": "h13611",
+    "topic": 1,
+    "question_num": 21,
+    "question": "Statement 1: MLC drives are optimal when used for high intensity writes to that disk.\nStatement 2: The latency of SSD drives is about 0.1 s.",
+    "answers": [
+      "- D. Statement 1 and 2 are false",
+      "I think 1 and 2 are false",
+      "0.1s = 100 ms -> this is an high latency even for mechanical disks"
+    ],
+    "url": "https://www.examtopics.com/discussions/huawei/view/126461-exam-h13-611-topic-1-question-21-discussion/"
+  },
+  {
+    "exam_code": "h13611",
+    "topic": 1,
+    "question_num": 22,
+    "question": "Statement 1: A port can be listed in multiple zones.\nStatement 2: A switch configuration can contain multiple zones.",
+    "answers": [
+      "A is collect ."
+    ],
+    "url": "https://www.examtopics.com/discussions/huawei/view/145779-exam-h13-611-topic-1-question-22-discussion/"
+  },
+  {
+    "exam_code": "h13611",
+    "topic": 1,
+    "question_num": 23,
+    "question": "Statement 1: Multipathing is caused by adding redundant hardware.\nStatement 2: Huawei offers a different version of UltraPath for different operating systems.",
+    "answers": [
+      "C!\nStatement 1 is false"
+    ],
+    "url": "https://www.examtopics.com/discussions/huawei/view/254439-exam-h13-611-topic-1-question-23-discussion/"
+  },
+  {
+    "exam_code": "h13611",
+    "topic": 1,
+    "question_num": 24,
+    "question": "Which of the following statements about block virtualization technology for Huawei storage systems are correct? (Choose all that apply.)",
+    "answers": [],
+    "url": "https://www.examtopics.com/discussions/huawei/view/254444-exam-h13-611-topic-1-question-24-discussion/"
+  },
+  {
+    "exam_code": "h13611",
+    "topic": 1,
+    "question_num": 25,
+    "question": "Which of the following is a valid protocol for a UNIX-based NAS server? (Choose all that apply.)",
+    "answers": [
+      "CIFS not SMB",
+      "Microsoft no longer supports cifs"
+    ],
+    "url": "https://www.examtopics.com/discussions/huawei/view/126462-exam-h13-611-topic-1-question-26-discussion/"
+  }
+]
