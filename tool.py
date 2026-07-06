@@ -340,10 +340,36 @@ def crawl_one_question(page, exam_code, topic, qnum):
                 print(f"  Loi lay cau hoi (fallback): {e}")
                 question = ''
 
+        # Lay hinh anh trong de bai (neu co). Nhieu ma de (vd FCSS_NST_SE-7.6)
+        # co so do/hinh minh hoa nam trong <img> ben trong .question-body.
+        # Dung im.src (thuoc tinh) de luon ra URL tuyet doi; ho tro ca lazy-load
+        # qua data-src/data-original.
+        try:
+            question_images = new_tab.evaluate("""
+                () => {
+                    const container = document.querySelector('.discussion-header-container');
+                    if (!container) return [];
+                    const scope = container.querySelector('.question-body') || container;
+                    const imgs = Array.from(scope.querySelectorAll('img'));
+                    const urls = imgs.map(im =>
+                        im.getAttribute('data-src')
+                        || im.getAttribute('data-original')
+                        || im.src
+                        || '');
+                    // Loc rong + trung lap, giu thu tu.
+                    return urls.filter((u, i) => u && urls.indexOf(u) === i);
+                }
+            """)
+        except Exception as e:
+            print(f"  Loi lay hinh de bai: {e}")
+            question_images = []
+        if not isinstance(question_images, list):
+            question_images = []
+
         # Lay cac lua chon dap an (A/B/C/D...) tu .question-choices-container.
         # Moi item co .multi-choice-letter[data-choice-letter] cho chu cai,
-        # phan text con lai la noi dung. Class 'correct-hidden' danh dau dap an
-        # goi y dung tren examtopics.
+        # phan text con lai la noi dung, va co the kem <img>. Class
+        # 'correct-hidden' danh dau dap an goi y dung tren examtopics.
         try:
             options = new_tab.evaluate("""
                 () => {
@@ -360,9 +386,15 @@ def crawl_one_question(page, exam_code, topic, qnum):
                             // Bo phan "A." o dau de chi giu noi dung lua chon.
                             text = text.replace(letterEl.innerText, '').trim();
                         }
+                        const imgs = Array.from(li.querySelectorAll('img')).map(im =>
+                            im.getAttribute('data-src')
+                            || im.getAttribute('data-original')
+                            || im.src
+                            || '').filter(u => u);
                         return {
                             letter: letter,
                             text: text,
+                            images: imgs,
                             is_correct: li.classList.contains('correct-hidden')
                         };
                     });
@@ -398,6 +430,7 @@ def crawl_one_question(page, exam_code, topic, qnum):
 
         clean_q = safe_encode(question)
         clean_ans = [safe_encode(a) for a in answers if a]
+        clean_q_images = [safe_encode(u) for u in question_images if isinstance(u, str) and u]
         clean_options = []
         suggested_answers = []
         for opt in options:
@@ -406,15 +439,20 @@ def crawl_one_question(page, exam_code, topic, qnum):
             letter = safe_encode(opt.get("letter", "") or "")
             text = safe_encode(opt.get("text", "") or "")
             is_correct = bool(opt.get("is_correct"))
+            opt_imgs_raw = opt.get("images") or []
+            opt_images = [safe_encode(u) for u in opt_imgs_raw if isinstance(u, str) and u]
             clean_options.append({
                 "letter": letter,
                 "text": text,
+                "images": opt_images,
                 "is_correct": is_correct,
             })
             # Cau "Choose two/three" co nhieu dap an dung -> gom tat ca lai.
             if is_correct and letter:
                 suggested_answers.append(letter)
         print(f"  Cau hoi: {clean_q[:100]}...")
+        if clean_q_images:
+            print(f"  So hinh trong de bai: {len(clean_q_images)}")
         print(f"  So lua chon: {len(clean_options)}"
               + (f" (dap an goi y: {', '.join(suggested_answers)})" if suggested_answers else ""))
         print(f"  So binh luan: {len(clean_ans)}")
@@ -424,6 +462,7 @@ def crawl_one_question(page, exam_code, topic, qnum):
             "topic": topic,
             "question_num": qnum,
             "question": clean_q,
+            "question_images": clean_q_images,
             "options": clean_options,
             "suggested_answers": suggested_answers,
             "answers": clean_ans,
