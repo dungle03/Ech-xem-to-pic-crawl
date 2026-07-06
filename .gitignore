@@ -3,3 +3,7 @@ venv
 
 #cache
 __pycache__
+
+#output json
+
+*.json

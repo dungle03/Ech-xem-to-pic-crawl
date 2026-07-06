@@ -43,14 +43,18 @@ def clean_exam_code(code):
 def normalize_exam_code(code):
     """Chuan hoa ma de cho tim kiem.
 
-    Giu lai chu cai, chu so va dau gach noi (vd: 'SK0-005' -> 'sk0-005')
-    de query dung dung dinh dang ma de that, khong bi mat dau gach nhu
-    clean_exam_code (ham do chi dung de dat ten file an toan).
+    Giu dung dinh dang ma de nhu slug cua examtopics de query va so khop URL
+    chinh xac. Da kiem chung tren examtopics:
+        SK0-005          -> sk0-005
+        FCSS_NST_SE-7.6  -> fcss_nst_se-76   (giu gach duoi, bo dau cham)
+    Quy tac: chu thuong; khoang trang -> gach noi; GIU lai chu/so/gach
+    duoi/gach noi; bo cac ky tu con lai (vd dau cham trong '7.6' -> '76').
+    Khac voi clean_exam_code (ham do chi dung de dat ten file an toan).
     """
     code = code.strip().lower()
-    code = re.sub(r'\s+', '-', code)        # khoang trang -> gach noi
-    code = re.sub(r'[^a-z0-9-]', '', code)  # bo ky tu la, giu chu/so/gach
-    code = re.sub(r'-+', '-', code).strip('-')
+    code = re.sub(r'\s+', '-', code)          # khoang trang -> gach noi
+    code = re.sub(r'[^a-z0-9_-]', '', code)   # giu chu/so/gach duoi/gach noi; bo dau cham...
+    code = re.sub(r'-+', '-', code).strip('-_')
     return code
 
 def link_matches_question(href, exam_code, topic, qnum):
