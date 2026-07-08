@@ -3,6 +3,7 @@ import json
 import os
 import re
 import random
+import httpx
 from cloakbrowser import launch
 
 try:
@@ -140,38 +141,82 @@ def safe_goto(page, url, timeout=60000):
         print(f"    Loi dieu huong: {e}")
         return False
 
-SEARCH_HOME = "https://duckduckgo.com/"
-SEARCH_BOX_SELECTORS = ('input[name="q"]', 'input#searchbox_input', 'textarea[name="q"]')
+# Cau hinh cac cong cu tim kiem. DuckDuckGo la engine chinh (it CAPTCHA),
+# Google chi dung lam fallback khi DDG khong tra ra link dung cau.
+SEARCH_ENGINES = {
+    "duckduckgo": {
+        "home": "https://duckduckgo.com/",
+        "box_selectors": ('input[name="q"]', 'input#searchbox_input', 'textarea[name="q"]'),
+        "result_selectors": (
+            '[data-testid="result"]',
+            'a[data-testid="result-title-a"]',
+            'article',
+            'a[href*="examtopics.com"]',
+        ),
+        "has_consent": False,
+    },
+    "google": {
+        "home": "https://www.google.com/",
+        "box_selectors": ('textarea[name="q"]', 'input[name="q"]'),
+        "result_selectors": (
+            'div#search',
+            'div#rso',
+            'a[href*="examtopics.com"]',
+        ),
+        "has_consent": True,
+    },
+}
 
 def warmup_search(page):
     """Ghe trang chu DuckDuckGo mot lan dau de tao cookie/session.
 
     DuckDuckGo khoan dung voi truy van tu dong hon Google rat nhieu (it
-    CAPTCHA), nen ta dung DDG de tra URL discussion. Chi goi mot lan khi
-    bat dau phien. DDG khong co man hinh consent nen warm-up don gian.
+    CAPTCHA), nen ta dung DDG lam engine chinh. Chi goi mot lan khi bat dau
+    phien. DDG khong co man hinh consent nen warm-up don gian.
     """
-    if not safe_goto(page, SEARCH_HOME):
+    if not safe_goto(page, SEARCH_ENGINES["duckduckgo"]["home"]):
         return False
     time.sleep(random.uniform(1.0, 2.0))
     return True
 
-def search_duckduckgo(page, query):
-    """Go query vao o tim kiem DuckDuckGo nhu nguoi dung that.
+def _accept_consent(page):
+    """Chap nhan man hinh consent cua Google neu hien (doc lap ngon ngu)."""
+    for sel in ('button#L2AGLb', 'button:has-text("Accept all")',
+                'button:has-text("I agree")'):
+        try:
+            btn = page.query_selector(sel)
+            if btn:
+                btn.click()
+                time.sleep(random.uniform(0.5, 1.0))
+                return
+        except Exception:
+            continue
 
-    Moi cau deu quay ve trang chu DDG truoc roi moi go vao o tim kiem. Lam vay
-    o tim kiem luon sach (tranh loi query bi noi chong), dong thoi van giu
-    cookie/session vi context duoc tai su dung xuyen suot phien.
+def search_engine(page, query, engine="duckduckgo"):
+    """Go query vao o tim kiem cua engine (duckduckgo/google) nhu nguoi that.
+
+    Moi lan deu quay ve trang chu engine truoc roi moi go vao o tim kiem, nen
+    o luon sach (tranh query bi noi chong), dong thoi van giu cookie/session vi
+    context duoc tai su dung xuyen suot phien.
     Tra ve True neu search thanh cong, False neu that bai.
     """
-    # Luon ve trang chu DDG de co o tim kiem trong, sach.
-    if not safe_goto(page, SEARCH_HOME):
-        print("  Khong tai duoc duckduckgo.com")
+    cfg = SEARCH_ENGINES.get(engine)
+    if not cfg:
+        print(f"  Engine khong ho tro: {engine}")
+        return False
+
+    # Luon ve trang chu de co o tim kiem trong, sach.
+    if not safe_goto(page, cfg["home"]):
+        print(f"  Khong tai duoc {engine}")
         return False
     time.sleep(random.uniform(0.5, 1.0))
 
-    # Tim o input tren trang DDG.
+    if cfg["has_consent"]:
+        _accept_consent(page)
+
+    # Tim o input.
     search_box = None
-    for sel in SEARCH_BOX_SELECTORS:
+    for sel in cfg["box_selectors"]:
         try:
             search_box = page.query_selector(sel)
             if search_box:
@@ -179,7 +224,7 @@ def search_duckduckgo(page, query):
         except Exception:
             continue
     if not search_box:
-        print("  Khong tim thay o tim kiem DuckDuckGo")
+        print(f"  Khong tim thay o tim kiem {engine}")
         return False
 
     # Click vao o, xoa sach noi dung cu (phong khi con sot), go query moi.
@@ -196,7 +241,6 @@ def search_duckduckgo(page, query):
         # Go tung ky tu voi delay ngau nhien de giong nguoi.
         for ch in query:
             page.keyboard.type(ch, delay=random.randint(25, 70))
-            # Them nghi ngoi nho sau moi vai ky tu
             if random.random() < 0.10:
                 time.sleep(random.uniform(0.1, 0.25))
         time.sleep(random.uniform(0.3, 0.7))
@@ -205,20 +249,13 @@ def search_duckduckgo(page, query):
         print(f"  Loi go query: {e}")
         return False
 
-    # Cho ket qua hien. DDG render ket qua bat dong bo SAU khi domcontentloaded
+    # Cho ket qua hien. Ket qua render bat dong bo SAU khi domcontentloaded
     # da fire, nen phai doi tan element ket qua xuat hien, khong sleep cung.
     try:
         page.wait_for_load_state("domcontentloaded", timeout=DEFAULT_OP_TIMEOUT)
     except PlaywrightTimeoutError:
         pass
-    # Doi vung ket qua thuc su co link (uu tien element ket qua cua DDG).
-    result_selectors = (
-        '[data-testid="result"]',
-        'a[data-testid="result-title-a"]',
-        'article',
-        'a[href*="examtopics.com"]',
-    )
-    for sel in result_selectors:
+    for sel in cfg["result_selectors"]:
         try:
             page.wait_for_selector(sel, timeout=8000)
             break
@@ -229,6 +266,115 @@ def search_duckduckgo(page, query):
     time.sleep(random.uniform(0.8, 1.5))
     return True
 
+def extract_matching_link(page, exam_code, topic, qnum):
+    """Duyet link tren trang ket qua, tra ve URL examtopics discussion khop cau.
+
+    Chi nhan link tro THANG toi examtopics.com; bo qua cac wrapper nhu
+    translate.google.com/... (chung co the chua slug nhung href thuc te lai
+    la domain khac -> mo se sai).
+    """
+    try:
+        links = page.query_selector_all('a[href*="examtopics.com/discussions"]')
+    except Exception as e:
+        print(f"  Loi liet ke link: {e}")
+        links = []
+    for link in links:
+        try:
+            candidate = link.get_attribute('href')
+        except Exception:
+            candidate = None
+        if not candidate:
+            continue
+        # Chi chap nhan link truc tiep den examtopics (loai wrapper/redirect).
+        if not re.match(r'https?://(www\.)?examtopics\.com/', candidate):
+            continue
+        if link_matches_question(candidate, exam_code, topic, qnum):
+            return candidate
+    return None
+
+def find_discussion_link(page, exam_code, topic, qnum):
+    """Tim URL discussion khop cau hoi. Thu DuckDuckGo truoc, khong thay -> Google.
+
+    Them 'site:examtopics.com' de thu hep ket qua chi trong examtopics, tang
+    do chinh xac va recall. Google chi dung khi DDG khong ra ket qua dung cau.
+    """
+    query = (f"exam {exam_code} topic {topic} question {qnum} "
+             f"discussion site:examtopics.com")
+
+    # 1. DuckDuckGo (engine chinh, it CAPTCHA)
+    if search_engine(page, query, "duckduckgo"):
+        href = extract_matching_link(page, exam_code, topic, qnum)
+        if href:
+            return href
+    print("  DuckDuckGo khong co link dung cau, thu Google...")
+
+    # 2. Google (fallback)
+    if search_engine(page, query, "google"):
+        href = extract_matching_link(page, exam_code, topic, qnum)
+        if href:
+            return href
+    return None
+
+def close_extra_tabs(main_page):
+    """Dong moi tab tru tab DuckDuckGo chinh (main_page).
+
+    Sau moi cau, context chi con dung 1 tab DDG. Tranh tab discussion cu +
+    cac popup do quang cao examtopics mo ra tich tu lam nang trinh duyet.
+    """
+    try:
+        for pg in list(main_page.context.pages):
+            if pg is not main_page:
+                safe_close(pg)
+    except Exception:
+        pass
+
+def wait_for_discussion(tab, timeout=DEFAULT_OP_TIMEOUT):
+    """Cho khoi noi dung discussion (.discussion-header-container) hien.
+
+    Cho tan element noi dung thay vi networkidle: trang examtopics hay treo
+    o networkidle vi tracker/ads khong bao gio idle, nhung noi dung that su
+    da co san. Tra ve True neu thay container, False neu het gio.
+    """
+    try:
+        tab.wait_for_selector('.discussion-header-container', timeout=timeout)
+        return True
+    except PlaywrightTimeoutError:
+        return False
+    except Exception:
+        return False
+
+def load_discussion_via_http(tab, href, timeout=30):
+    """Fallback: tai HTML discussion bang HTTP thuan roi nap vao tab.
+
+    Trang discussion cua examtopics duoc render san tu server (curl/httpx lay
+    duoc trong ~1s), nhung mo bang browser doi khi treo vo han vi tracker/ads.
+    Ta tai HTML bang httpx roi dat vao tab qua set_content, sau do van dung
+    dung logic boc du lieu (querySelector) nhu binh thuong.
+    Tra ve True neu nap duoc noi dung discussion, False neu that bai.
+    """
+    ua = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+    try:
+        resp = httpx.get(href, headers={"User-Agent": ua}, timeout=timeout,
+                         follow_redirects=True)
+        if resp.status_code != 200 or not resp.text:
+            print(f"    HTTP fallback tra ve {resp.status_code}")
+            return False
+        html_text = resp.text
+    except Exception as e:
+        print(f"    Loi tai HTTP: {e}")
+        return False
+    try:
+        # wait_until="domcontentloaded": chi cho DOM san sang, KHONG cho event
+        # 'load' (mac dinh) vi 'load' doi anh/ads tai xong -> treo 30s vo ich
+        # trong khi noi dung da co san trong DOM.
+        tab.set_content(html_text, timeout=timeout * 1000,
+                        wait_until="domcontentloaded")
+    except Exception as e:
+        print(f"    Loi nap HTML vao tab: {e}")
+        return False
+    return tab.query_selector('.discussion-header-container') is not None
+
 def crawl_one_question(page, exam_code, topic, qnum):
     """Crawl mot cau hoi, tai su dung `page` (va session/cookie) dung chung.
 
@@ -238,58 +384,64 @@ def crawl_one_question(page, exam_code, topic, qnum):
     """
     new_tab = None
     query = f"exam {exam_code} topic {topic} question {qnum} discussion"
-    print(f"\n[DuckDuckGo] {query}")
+    print(f"\n[Search] {query}")
 
     try:
-        # 1. Go query vao o tim kiem nhu nguoi that (khong goto thang URL)
-        if not search_duckduckgo(page, query):
-            print("  Khong search duoc tren DuckDuckGo")
-            return None
+        # Dam bao dau moi cau chi con 1 tab DDG (don tab cu/popup neu con sot).
+        close_extra_tabs(page)
 
-        # 2. Tim link examtopics
-        # Chi chap nhan link discussion khop CHINH XAC exam_code + topic + qnum.
-        # Khong lay link dau tien chung chung, vi search engine hay day trang tong hop
-        # ("Free Actual Q&As, Page 1" chua cau 1-10) hoac cau/ma de khac len dau,
-        # khien du lieu bi gan sai nhan ma khong bao loi.
-        try:
-            links = page.query_selector_all('a[href*="examtopics.com/discussions"]')
-        except Exception as e:
-            print(f"  Loi liet ke link: {e}")
-            links = []
-        href = None
-        for link in links:
-            try:
-                candidate = link.get_attribute('href')
-            except Exception:
-                candidate = None
-            if link_matches_question(candidate, exam_code, topic, qnum):
-                href = candidate
-                break
+        # 1+2. Tim link discussion khop cau: DuckDuckGo truoc, khong thay -> Google.
+        #      Chi nhan link khop CHINH XAC exam_code + topic + qnum de khong lay
+        #      nham cau khac/ma de khac/trang tong hop.
+        href = find_discussion_link(page, exam_code, topic, qnum)
         if not href:
-            print(f"  Khong tim thay link examtopics dung cau {qnum} (bo qua link tong hop/cau khac)")
+            print(f"  Khong tim thay link examtopics dung cau {qnum} (DDG + Google deu khong ra)")
             return None
         print(f"  Tim thay: {href}")
 
-        # 3. Mo tab moi
+        # 3. Mo tab discussion. Uu tien mo tab moi (giong nguoi bam vao ket qua),
+        #    cho tan khi noi dung discussion hien. Neu tab treo/khong len noi dung
+        #    -> fallback: tai HTML bang HTTP thuan (dung href da ghi nho) roi nap
+        #    vao tab. Trang discussion render san tu server nen HTTP lay duoc
+        #    trong ~1s ngay ca khi browser treo vo han vi tracker/ads.
         print("  Dang mo tab moi...")
         try:
-            with page.context.expect_page(timeout=DEFAULT_OP_TIMEOUT) as new_page_info:
+            with page.context.expect_page(timeout=15000) as new_page_info:
                 # json.dumps de chong vo JS khi href chua dau nhay don.
                 page.evaluate(f"window.open({json.dumps(href)}, '_blank');")
             new_tab = new_page_info.value
         except PlaywrightTimeoutError:
             print("  Het thoi gian cho tab moi")
-            return None
+            new_tab = None
         except Exception as e:
             print(f"  Loi mo tab moi: {e}")
-            return None
-        if not new_tab:
-            print("  Khong mo duoc tab moi")
-            return None
-        print("  Da mo tab moi")
+            new_tab = None
 
-        if not wait_for_page_load(new_tab, timeout=DEFAULT_OP_TIMEOUT):
-            print("  Tab moi load cham, van tiep tuc...")
+        loaded = False
+        if new_tab:
+            print("  Da mo tab moi, dang cho noi dung...")
+            loaded = wait_for_discussion(new_tab, timeout=15000)
+
+        if not loaded:
+            # Fallback: tai HTML bang HTTP thuan roi nap vao tab.
+            print("  Tab load lau/loi -> tai thang link bang HTTP...")
+            # Dung tab da mo neu co, khong thi tao tab moi de nap noi dung.
+            if new_tab is None:
+                try:
+                    new_tab = page.context.new_page()
+                except Exception as e:
+                    print(f"  Loi tao tab: {e}")
+                    new_tab = None
+            if new_tab is not None:
+                loaded = load_discussion_via_http(new_tab, href)
+                if loaded:
+                    print("  Da tai noi dung qua HTTP")
+
+        if not new_tab:
+            print("  Khong mo duoc tab discussion")
+            return None
+        if not loaded:
+            print("  Van khong tai duoc noi dung discussion, thu boc du lieu du co...")
         time.sleep(1)
 
         # 4. Xoa overlay
@@ -472,9 +624,12 @@ def crawl_one_question(page, exam_code, topic, qnum):
         print(f"  Loi: {e}")
         return None
     finally:
-        # Chi dong tab discussion vua mo. Page/context DDG duoc giu song
-        # xuyen suot phien de tai su dung session/cookie.
-        safe_close(new_tab)
+        # Sau moi cau: dong het tab tru tab DuckDuckGo chinh (`page`).
+        # Gom tab discussion vua mo + moi popup quang cao examtopics sinh ra,
+        # de context luon chi con dung 1 tab, khong tich tu lam nang trinh duyet.
+        # Page/context DDG duoc giu song xuyen suot phien de tai su dung
+        # session/cookie.
+        close_extra_tabs(page)
 
 def parse_range(range_input):
     """Phan tich chuoi pham vi. Tra ve (start, end) hoac None neu khong hop le."""
