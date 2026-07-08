@@ -1,16 +1,19 @@
 # ExamTopics Crawler
 
-Tự động thu thập câu hỏi từ ExamTopics qua DuckDuckGo và lưu kết quả dưới dạng JSON.
+Tự động thu thập câu hỏi từ ExamTopics và lưu kết quả dưới dạng JSON.
 
 ## Tính năng
 
-* Tìm kiếm qua DuckDuckGo (không dùng Google, tránh CAPTCHA).
+* Tìm kiếm qua DuckDuckGo (ít CAPTCHA), tự chuyển sang Google khi DuckDuckGo không ra kết quả.
+* Thu hẹp truy vấn bằng `site:examtopics.com` để tăng độ chính xác.
 * Tái sử dụng session/cookie xuyên suốt phiên crawl.
 * Gõ query vào ô tìm kiếm như người dùng thật (humanize).
 * Fingerprint macOS nhất quán qua CloakBrowser.
-* Lọc link chính xác theo slug — bỏ qua trang tổng hợp và câu/mã đề khác.
+* Lọc link chính xác theo slug — bỏ qua trang tổng hợp, câu/mã đề khác và link wrapper.
 * Thu thập đầy đủ: đề bài, hình ảnh, các lựa chọn (A/B/C/D...), đáp án gợi ý, bình luận cộng đồng.
 * Lấy cả URL hình trong đề bài và trong từng lựa chọn (nếu có).
+* Fallback tải trang qua HTTP khi trình duyệt load trang discussion bị treo.
+* Dọn tab sau mỗi câu, chỉ giữ lại một tab tìm kiếm.
 * Hỗ trợ mã đề nhiều định dạng: gạch nối, gạch dưới, dấu chấm (`sk0-005`, `az-104`, `FCSS_NST_SE-7.6`).
 * Lưu liên tục sau mỗi câu, tiếp tục được từ lần chạy trước (không mất dữ liệu khi dừng giữa chừng).
 * Retry tự động khi gặp lỗi.
@@ -57,6 +60,14 @@ Nhap ma de (ex200, ex300): FCSS_NST_SE-7.6
 Nhap topic (mac dinh 1): 1
 Nhap pham vi cau (vd: 1-10, hoac de trong lay 1-120): 1-50
 ```
+
+## Cách hoạt động
+
+Với mỗi câu hỏi, tool tra URL trang discussion theo thứ tự:
+
+1. Tìm trên DuckDuckGo (kèm `site:examtopics.com`).
+2. Nếu không thấy link khớp đúng câu, tìm lại trên Google.
+3. Mở trang discussion tìm được; nếu trình duyệt load treo, tải nội dung qua HTTP rồi bóc dữ liệu.
 
 ## Kết quả
 
