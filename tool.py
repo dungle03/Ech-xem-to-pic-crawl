@@ -4,6 +4,7 @@ import os
 import re
 import random
 import httpx
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from cloakbrowser import launch
 
 try:
@@ -41,21 +42,32 @@ def safe_encode(text):
 def clean_exam_code(code):
     return re.sub(r'[^a-zA-Z0-9]', '', code).lower()
 
+def canonical_exam_code(code):
+    """Chuan hoa ma de de DOI CHIEU URL: chi giu chu/so.
+
+    Search van dung `normalize_exam_code()` de go dung ma de nguoi dung nhap
+    (giu -, _, .). Rieng URL ExamTopics/search index co the bo/doi dau phan
+    cach, vd H12-711_V4.0 -> h12-711_v40. So sanh chuoi chu/so giup nhan dung
+    dung ma de ma khong phu thuoc cach URL bieu dien dau.
+    """
+    return re.sub(r'[^a-z0-9]', '', (code or '').lower())
+
 def normalize_exam_code(code):
     """Chuan hoa ma de cho tim kiem.
 
     Giu dung dinh dang ma de nhu slug cua examtopics de query va so khop URL
     chinh xac. Da kiem chung tren examtopics:
         SK0-005          -> sk0-005
-        FCSS_NST_SE-7.6  -> fcss_nst_se-76   (giu gach duoi, bo dau cham)
+        H12-711_V4.0     -> h12-711_v4.0
+        FCSS_NST_SE-7.6  -> fcss_nst_se-7.6
     Quy tac: chu thuong; khoang trang -> gach noi; GIU lai chu/so/gach
-    duoi/gach noi; bo cac ky tu con lai (vd dau cham trong '7.6' -> '76').
+    duoi/gach noi/dau cham; bo cac ky tu con lai.
     Khac voi clean_exam_code (ham do chi dung de dat ten file an toan).
     """
     code = code.strip().lower()
     code = re.sub(r'\s+', '-', code)          # khoang trang -> gach noi
-    code = re.sub(r'[^a-z0-9_-]', '', code)   # giu chu/so/gach duoi/gach noi; bo dau cham...
-    code = re.sub(r'-+', '-', code).strip('-_')
+    code = re.sub(r'[^a-z0-9_.-]', '', code)  # giu chu/so/gach duoi/gach noi/dau cham
+    code = re.sub(r'-+', '-', code).strip('-_.')
     return code
 
 def link_matches_question(href, exam_code, topic, qnum):
@@ -63,14 +75,26 @@ def link_matches_question(href, exam_code, topic, qnum):
 
     examtopics dung slug dang:
         .../view/61482-exam-sk0-005-topic-1-question-1-discussion/
-    Ta yeu cau khop chinh xac exam_code + topic + qnum de khong lay nham
-    cau khac, ma de khac (vd xk0-005), hay trang tong hop nhieu cau.
+    Ta yeu cau khop dung exam_code + topic + qnum de khong lay nham cau khac,
+    ma de khac (vd xk0-005), hay trang tong hop nhieu cau. Rieng exam_code duoc
+    so sanh theo chu/so vi search index co the bo/doi dau phan cach trong URL
+    (vd h12-711_v4.0 -> h12-711_v40).
     Phan '-discussion' ngay sau qnum chong viec question-2 khop nham question-20.
     """
     if not href or 'examtopics.com/discussions' not in href:
         return False
-    pattern = rf'exam-{re.escape(exam_code)}-topic-{topic}-question-{qnum}-discussion'
-    return re.search(pattern, href.lower()) is not None
+    href = href.lower()
+    match = re.search(
+        r'exam-(?P<code>.+?)-topic-(?P<topic>\d+)-question-(?P<qnum>\d+)-discussion',
+        href,
+    )
+    if not match:
+        return False
+    return (
+        canonical_exam_code(match.group('code')) == canonical_exam_code(exam_code)
+        and int(match.group('topic')) == int(topic)
+        and int(match.group('qnum')) == int(qnum)
+    )
 
 def clean_data(data):
     if isinstance(data, dict):
@@ -266,30 +290,92 @@ def search_engine(page, query, engine="duckduckgo"):
     time.sleep(random.uniform(0.8, 1.5))
     return True
 
+def is_examtopics_discussion_url(url):
+    """Kiem tra URL da giai ma co tro den trang discussion ExamTopics khong."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    host = (parsed.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return (
+        parsed.scheme in ("http", "https")
+        and host == "examtopics.com"
+        and "/discussions/" in parsed.path
+    )
+
+def unwrap_search_href(raw_href, base_url):
+    """Giai ma link ket qua search ve cac URL ung vien thuc.
+
+    DuckDuckGo/Google thuong boc link dich trong redirect params nhu `uddg`,
+    `url`, `q`. Neu chi doc href thuan thi se thay domain search engine thay vi
+    examtopics, dan den bo sot ket qua dang hien ro tren man hinh.
+    """
+    candidates = []
+
+    def add(url):
+        if not url:
+            return
+        url = unquote(str(url).strip())
+        if base_url and url.startswith("/"):
+            url = urljoin(base_url, url)
+        if url and url not in candidates:
+            candidates.append(url)
+
+    add(raw_href)
+    idx = 0
+    while idx < len(candidates):
+        current = candidates[idx]
+        idx += 1
+
+        try:
+            parsed = urlparse(current)
+            params = parse_qs(parsed.query)
+        except Exception:
+            params = {}
+
+        for key in ("uddg", "url", "q", "u"):
+            for value in params.get(key, []):
+                add(value)
+
+        decoded = unquote(current)
+        for match in re.findall(
+            r'https?://(?:www\.)?examtopics\.com/[^\s&"\'<>]+',
+            decoded,
+            flags=re.I,
+        ):
+            add(match)
+
+    return candidates
+
 def extract_matching_link(page, exam_code, topic, qnum):
     """Duyet link tren trang ket qua, tra ve URL examtopics discussion khop cau.
 
-    Chi nhan link tro THANG toi examtopics.com; bo qua cac wrapper nhu
-    translate.google.com/... (chung co the chua slug nhung href thuc te lai
-    la domain khac -> mo se sai).
+    Doc moi anchor tren trang search, giai ma redirect/wrapper cua DuckDuckGo
+    va Google, sau do chi chap nhan URL dich thuc su nam tren examtopics.com.
     """
     try:
-        links = page.query_selector_all('a[href*="examtopics.com/discussions"]')
+        links = page.query_selector_all('a[href]')
     except Exception as e:
         print(f"  Loi liet ke link: {e}")
         links = []
+    try:
+        base_url = page.url
+    except Exception:
+        base_url = ""
     for link in links:
         try:
-            candidate = link.get_attribute('href')
+            raw_href = link.get_attribute('href')
         except Exception:
-            candidate = None
-        if not candidate:
+            raw_href = None
+        if not raw_href:
             continue
-        # Chi chap nhan link truc tiep den examtopics (loai wrapper/redirect).
-        if not re.match(r'https?://(www\.)?examtopics\.com/', candidate):
-            continue
-        if link_matches_question(candidate, exam_code, topic, qnum):
-            return candidate
+        for candidate in unwrap_search_href(raw_href, base_url):
+            if not is_examtopics_discussion_url(candidate):
+                continue
+            if link_matches_question(candidate, exam_code, topic, qnum):
+                return candidate
     return None
 
 def find_discussion_link(page, exam_code, topic, qnum):
@@ -343,13 +429,14 @@ def wait_for_discussion(tab, timeout=DEFAULT_OP_TIMEOUT):
     except Exception:
         return False
 
-def load_discussion_via_http(tab, href, timeout=30):
+def load_discussion_via_http(tab, href, timeout=20):
     """Fallback: tai HTML discussion bang HTTP thuan roi nap vao tab.
 
     Trang discussion cua examtopics duoc render san tu server (curl/httpx lay
     duoc trong ~1s), nhung mo bang browser doi khi treo vo han vi tracker/ads.
-    Ta tai HTML bang httpx roi dat vao tab qua set_content, sau do van dung
-    dung logic boc du lieu (querySelector) nhu binh thuong.
+    Ta tai HTML bang httpx, XOA cac the <script>/<iframe> (quang cao/tracker,
+    khong can vi noi dung la HTML tinh render san), roi bom vao tab bang
+    document.write de nap tuc thi ma KHONG cho tai nguyen ngoai.
     Tra ve True neu nap duoc noi dung discussion, False neu that bai.
     """
     ua = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -364,12 +451,22 @@ def load_discussion_via_http(tab, href, timeout=30):
     except Exception as e:
         print(f"    Loi tai HTTP: {e}")
         return False
+    # Xoa script/iframe: chung khien trinh duyet co gang tai/thuc thi
+    # tracker+ads, trong khi noi dung can boc la HTML tinh render san.
+    html_text = re.sub(r'<script\b[^>]*>.*?</script>', '', html_text,
+                       flags=re.S | re.I)
+    html_text = re.sub(r'<script\b[^>]*/>', '', html_text, flags=re.I)
+    html_text = re.sub(r'<iframe\b[^>]*>.*?</iframe>', '', html_text,
+                       flags=re.S | re.I)
     try:
-        # wait_until="domcontentloaded": chi cho DOM san sang, KHONG cho event
-        # 'load' (mac dinh) vi 'load' doi anh/ads tai xong -> treo 30s vo ich
-        # trong khi noi dung da co san trong DOM.
-        tab.set_content(html_text, timeout=timeout * 1000,
-                        wait_until="domcontentloaded")
+        # Dung document.write thay cho set_content: no chi bom HTML vao DOM
+        # dong bo, KHONG cho tai nguyen ngoai nao ca -> nap tuc thi (~0.1s),
+        # tranh viec set_content treo cho commit/load vo han.
+        tab.goto("about:blank", wait_until="commit", timeout=10000)
+        tab.evaluate(
+            "(h) => { document.open(); document.write(h); document.close(); }",
+            html_text,
+        )
     except Exception as e:
         print(f"    Loi nap HTML vao tab: {e}")
         return False
