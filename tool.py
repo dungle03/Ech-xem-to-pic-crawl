@@ -3,16 +3,17 @@ import json
 import os
 import re
 import random
+from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import httpx
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from cloakbrowser import launch
+from docx import Document
+from docx.shared import Pt, Inches, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from PIL import Image as PILImage
 
-try:
-    # cloakbrowser chay tren Playwright nen TimeoutError luon co san.
-    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-except Exception:  # fallback neu backend thay doi
-    class PlaywrightTimeoutError(Exception):
-        pass
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 # Nghi ngau nhien giua cac cau (giay) de tranh nhip deu de bi chan.
 # DuckDuckGo khoan dung hon Google nhieu nen co the de thap.
@@ -24,27 +25,282 @@ OUTPUT_DIR = "output"
 # Timeout mac dinh (ms) cho cac thao tac Playwright de tranh treo vo han.
 DEFAULT_OP_TIMEOUT = 30000
 
-def safe_encode(text):
-    if not isinstance(text, str):
-        return text
-    try:
-        return text.encode('utf-8', errors='ignore').decode('utf-8')
-    except Exception:
-        result = []
-        for ch in text:
-            try:
-                ch.encode('utf-8')
-                result.append(ch)
-            except Exception:
-                continue
-        return ''.join(result)
+# Sentinel rieng cho case search DDG + Google khong ra link dung cau. Case nay
+# khong retry vi moi retry lai ton them 2 lan search engine nhung ket qua nhu cu.
+NO_DISCUSSION_LINK = object()
 
-def clean_exam_code(code):
-    return re.sub(r'[^a-zA-Z0-9]', '', code).lower()
+_IMG_HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+_IMG_CACHE = {}
+
+
+def _fetch_image(url):
+    if url in _IMG_CACHE:
+        return _IMG_CACHE[url]
+    try:
+        resp = httpx.get(url, headers=_IMG_HEADERS, timeout=15, follow_redirects=True)
+        resp.raise_for_status()
+        img = PILImage.open(BytesIO(resp.content))
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+    except Exception:
+        buf = None
+    _IMG_CACHE[url] = buf
+    return buf
+
+
+def _preload_images(questions):
+    urls = set()
+    for q in questions:
+        urls.update(q.get("question_images", []))
+        for opt in q.get("options", []):
+            urls.update(opt.get("images", []))
+    todo = [u for u in urls if u not in _IMG_CACHE]
+    if not todo:
+        return
+    print(f"  Tai {len(todo)} anh...")
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(_fetch_image, u): u for u in todo}
+        done = 0
+        for future in as_completed(futures):
+            done += 1
+            if done % 50 == 0:
+                print(f"    {done}/{len(todo)}")
+
+
+def escape_html(text):
+    return (text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;"))
+
+
+def build_html(questions, exam_code):
+    parts = []
+    parts.append(f"""<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>{escape_html(exam_code)} - Exam Dump</title>
+<style>
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{ font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5; color: #1a1a2e; padding: 24px 16px; }}
+.container {{ max-width: 800px; margin: 0 auto; }}
+h1 {{ text-align: center; font-size: 1.6em; color: #16213e; margin-bottom: 4px; }}
+.meta {{ text-align: center; color: #666; font-size: 0.9em; margin-bottom: 32px; }}
+.question-card {{
+    background: #fff; border-radius: 12px; padding: 20px 24px; margin-bottom: 20px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08); page-break-inside: avoid;
+}}
+.q-num {{
+    display: inline-block; background: #16213e; color: #fff; border-radius: 6px;
+    padding: 2px 10px; font-size: 0.85em; font-weight: 600; margin-bottom: 10px;
+}}
+.q-text {{ font-size: 1.05em; line-height: 1.55; white-space: pre-wrap; margin-bottom: 14px; }}
+.q-images img {{ max-width: 100%; border-radius: 6px; margin: 6px 0; border: 1px solid #ddd; }}
+.options {{ list-style: none; }}
+.options li {{
+    padding: 8px 12px; margin-bottom: 6px; border-radius: 8px;
+    border: 1px solid #e0e0e0; line-height: 1.45; font-size: 0.95em;
+}}
+.options li.correct {{ background: #e8f5e9; border-color: #4caf50; font-weight: 500; }}
+.opt-letter {{ font-weight: 700; margin-right: 8px; }}
+.correct-badge {{
+    display: inline-block; background: #4caf50; color: #fff; border-radius: 4px;
+    padding: 1px 7px; font-size: 0.78em; margin-left: 8px; vertical-align: middle;
+}}
+.answers-section {{ margin-top: 14px; border-top: 1px solid #eee; padding-top: 12px; }}
+.answers-toggle {{ cursor: pointer; color: #1565c0; font-size: 0.88em; user-select: none; }}
+.answers-content {{ display: none; margin-top: 8px; }}
+.answers-content.open {{ display: block; }}
+.comment {{
+    background: #fafafa; border-left: 3px solid #bbb; border-radius: 0 6px 6px 0;
+    padding: 8px 12px; margin-top: 8px; font-size: 0.9em; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word;
+}}
+.error-tag {{
+    display: inline-block; background: #ffebee; color: #c62828; border: 1px solid #ef9a9a;
+    border-radius: 6px; padding: 3px 10px; font-size: 0.85em; margin-top: 8px;
+}}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>{escape_html(exam_code.upper())}</h1>
+<div class="meta">{len(questions)} cau hoi &middot; Topic dump ExamTopics</div>
+""")
+
+    for i, q in enumerate(questions, 1):
+        num = q.get("question_num", i)
+        question_text = escape_html(q.get("question", ""))
+        suggested = q.get("suggested_answers", [])
+
+        images = q.get("question_images", [])
+        img_html = ""
+        for url in images:
+            img_html += f'<img src="{escape_html(url)}" alt="" loading="lazy">\n'
+
+        options_html = ""
+        for opt in q.get("options", []):
+            letter = opt.get("letter", "")
+            text = escape_html(opt.get("text", ""))
+            is_correct = opt.get("is_correct", False)
+            cls = "correct" if is_correct else ""
+            badge = '<span class="correct-badge">&#10003;</span>' if is_correct else ""
+
+            opt_imgs = opt.get("images", [])
+            opt_img_html = ""
+            for u in opt_imgs:
+                opt_img_html += f'<br><img src="{escape_html(u)}" alt="" style="max-width:100%;margin-top:6px;border-radius:4px;">\n'
+
+            options_html += f'<li class="{cls}"><span class="opt-letter">{escape_html(letter)}.</span> {text}{badge}{opt_img_html}</li>\n'
+
+        answers = q.get("answers", [])
+        answers_html = ""
+        if answers:
+            comments = "\n".join(
+                f'<div class="comment">{escape_html(c)}</div>' for c in answers
+            )
+            answers_html = f"""
+<div class="answers-section">
+<span class="answers-toggle" onclick="var c=this.nextElementSibling;c.classList.toggle('open');this.textContent=c.classList.contains('open')?'&#9654; An binh luan':'&#9660; Xem binh luan ({len(answers)})';">&#9660; Xem binh luan ({len(answers)})</span>
+<div class="answers-content open">{comments}</div>
+</div>"""
+
+        error_tag = ""
+        if q.get("error"):
+            error_tag = f'<div><span class="error-tag">Loi: {escape_html(q["error"])}</span></div>'
+
+        answer_str = ", ".join(suggested) if suggested else "N/A"
+        parts.append(f"""
+<div class="question-card" id="q{num}">
+<span class="q-num">Cau {num} &middot; Dap an: {escape_html(answer_str)}</span>
+<div class="q-text">{question_text}</div>
+{'<div class="q-images">' + img_html + '</div>' if img_html else ''}
+<ul class="options">{options_html}</ul>
+{error_tag}
+{answers_html}
+</div>""")
+
+    parts.append("</div>\n</body>\n</html>")
+    return "\n".join(parts)
+
+
+def convert_to_html(json_path):
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        raise ValueError("File JSON khong phai danh sach cau hoi.")
+    questions = [q for q in data if isinstance(q, dict) and q.get("question")]
+    if not questions:
+        raise ValueError("Khong co cau hoi hop le trong file.")
+    exam_code = questions[0].get("exam_code", "exam")
+    html = build_html(questions, exam_code)
+    out_path = os.path.splitext(json_path)[0] + ".html"
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"HTML: {out_path}")
+    return out_path
+
+
+def _add_question_docx(doc, q, num):
+    suggested = q.get("suggested_answers", [])
+    answer_str = ", ".join(suggested) if suggested else "N/A"
+
+    heading = doc.add_heading(f"Cau {num}", level=2)
+    for run in heading.runs:
+        run.font.color.rgb = RGBColor(0x16, 0x21, 0x3E)
+        run.font.size = Pt(14)
+
+    answer_p = doc.add_paragraph()
+    answer_run = answer_p.add_run(f"Dap an: {answer_str}")
+    answer_run.bold = True
+    answer_run.font.color.rgb = RGBColor(0x2E, 0x7D, 0x32)
+
+    question_text = q.get("question", "")
+    p = doc.add_paragraph(question_text)
+    p.paragraph_format.space_after = Pt(8)
+
+    for url in q.get("question_images", []):
+        buf = _fetch_image(url)
+        if buf:
+            doc.add_picture(buf, width=Inches(5.5))
+        else:
+            doc.add_paragraph(url)
+
+    for opt in q.get("options", []):
+        letter = opt.get("letter", "")
+        text = opt.get("text", "")
+        is_correct = opt.get("is_correct", False)
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(4)
+        p.paragraph_format.left_indent = Inches(0.25)
+
+        letter_run = p.add_run(f"{letter}. ")
+        letter_run.bold = True
+
+        text_run = p.add_run(text)
+        if is_correct:
+            text_run.bold = True
+            text_run.font.color.rgb = RGBColor(0x2E, 0x7D, 0x32)
+            check = p.add_run("  \u2713")
+            check.bold = True
+            check.font.color.rgb = RGBColor(0x2E, 0x7D, 0x32)
+
+        for img_url in opt.get("images", []):
+            buf = _fetch_image(img_url)
+            if buf:
+                doc.add_picture(buf, width=Inches(4))
+
+    answers = q.get("answers", [])
+    if answers:
+        doc.add_paragraph("Binh luan:", style="List Bullet")
+        for comment in answers[:5]:
+            p = doc.add_paragraph(comment[:500])
+            p.paragraph_format.left_indent = Inches(0.5)
+            p.paragraph_format.space_after = Pt(6)
+            for run in p.runs:
+                run.font.size = Pt(9)
+                run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+
+    if q.get("error"):
+        p = doc.add_paragraph(f"[Loi] {q['error']}")
+        for run in p.runs:
+            run.font.color.rgb = RGBColor(0xC6, 0x28, 0x28)
+            run.font.size = Pt(9)
+
+
+def convert_to_docx(json_path):
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        raise ValueError("File JSON khong phai danh sach cau hoi.")
+    questions = [q for q in data if isinstance(q, dict) and q.get("question")]
+    if not questions:
+        raise ValueError("Khong co cau hoi hop le trong file.")
+
+    _preload_images(questions)
+
+    exam_code = questions[0].get("exam_code", "exam")
+    doc = Document()
+
+    title = doc.add_heading(exam_code.upper(), level=1)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    meta = doc.add_paragraph(f"{len(questions)} cau hoi - Topic dump ExamTopics")
+    meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_page_break()
+
+    for i, q in enumerate(questions, 1):
+        _add_question_docx(doc, q, q.get("question_num", i))
+
+    out_path = os.path.splitext(json_path)[0] + ".docx"
+    doc.save(out_path)
+    print(f"DOCX: {out_path}")
+    return out_path
 
 def canonical_exam_code(code):
     """Chuan hoa ma de de DOI CHIEU URL: chi giu chu/so.
 
+    Cung dung de dat ten file an toan (bo dau phan cach).
     Search van dung `normalize_exam_code()` de go dung ma de nguoi dung nhap
     (giu -, _, .). Rieng URL ExamTopics/search index co the bo/doi dau phan
     cach, vd H12-711_V4.0 -> h12-711_v40. So sanh chuoi chu/so giup nhan dung
@@ -62,7 +318,7 @@ def normalize_exam_code(code):
         FCSS_NST_SE-7.6  -> fcss_nst_se-7.6
     Quy tac: chu thuong; khoang trang -> gach noi; GIU lai chu/so/gach
     duoi/gach noi/dau cham; bo cac ky tu con lai.
-    Khac voi clean_exam_code (ham do chi dung de dat ten file an toan).
+    Khac voi canonical_exam_code (ham do chi dung de dat ten file an toan).
     """
     code = code.strip().lower()
     code = re.sub(r'\s+', '-', code)          # khoang trang -> gach noi
@@ -96,16 +352,6 @@ def link_matches_question(href, exam_code, topic, qnum):
         and int(match.group('qnum')) == int(qnum)
     )
 
-def clean_data(data):
-    if isinstance(data, dict):
-        return {k: clean_data(v) for k, v in data.items()}
-    elif isinstance(data, list):
-        return [clean_data(v) for v in data]
-    elif isinstance(data, str):
-        return safe_encode(data)
-    else:
-        return data
-
 def safe_close(obj):
     """Dong an toan mot page/context/tab/browser, nuot loi dong khong quan trong."""
     if obj is None:
@@ -119,9 +365,8 @@ def save_progress(data, filename):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     filepath = os.path.join(OUTPUT_DIR, filename)
     try:
-        cleaned = clean_data(data)
         with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(cleaned, f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
         print(f"  Loi JSON: {e}, thu fallback...")
@@ -132,23 +377,6 @@ def save_progress(data, filename):
         except Exception as e2:
             print(f"  Fallback JSON that bai: {e2}")
             return False
-
-def wait_for_page_load(page, timeout=DEFAULT_OP_TIMEOUT):
-    try:
-        page.wait_for_load_state("networkidle", timeout=timeout)
-        return True
-    except PlaywrightTimeoutError:
-        try:
-            page.wait_for_load_state("domcontentloaded", timeout=10000)
-            return True
-        except PlaywrightTimeoutError:
-            return False
-        except Exception as e:
-            print(f"    Loi cho load (domcontentloaded): {e}")
-            return False
-    except Exception as e:
-        print(f"    Loi cho load (networkidle): {e}")
-        return False
 
 def safe_goto(page, url, timeout=60000):
     try:
@@ -493,7 +721,7 @@ def crawl_one_question(page, exam_code, topic, qnum):
         href = find_discussion_link(page, exam_code, topic, qnum)
         if not href:
             print(f"  Khong tim thay link examtopics dung cau {qnum} (DDG + Google deu khong ra)")
-            return None
+            return NO_DISCUSSION_LINK
         print(f"  Tim thay: {href}")
 
         # 3. Mo tab discussion. Uu tien mo tab moi (giong nguoi bam vao ket qua),
@@ -677,19 +905,19 @@ def crawl_one_question(page, exam_code, topic, qnum):
             print(f"  Khong lay duoc cau hoi cho cau {qnum}")
             return None
 
-        clean_q = safe_encode(question)
-        clean_ans = [safe_encode(a) for a in answers if a]
-        clean_q_images = [safe_encode(u) for u in question_images if isinstance(u, str) and u]
+        clean_q = question
+        clean_ans = [a for a in answers if a]
+        clean_q_images = [u for u in question_images if isinstance(u, str) and u]
         clean_options = []
         suggested_answers = []
         for opt in options:
             if not isinstance(opt, dict):
                 continue
-            letter = safe_encode(opt.get("letter", "") or "")
-            text = safe_encode(opt.get("text", "") or "")
+            letter = opt.get("letter", "") or ""
+            text = opt.get("text", "") or ""
             is_correct = bool(opt.get("is_correct"))
             opt_imgs_raw = opt.get("images") or []
-            opt_images = [safe_encode(u) for u in opt_imgs_raw if isinstance(u, str) and u]
+            opt_images = [u for u in opt_imgs_raw if isinstance(u, str) and u]
             clean_options.append({
                 "letter": letter,
                 "text": text,
@@ -774,7 +1002,7 @@ def main():
     # search_code giu nguyen dinh dang that (vd: sk0-005) de query chinh xac;
     # clean_code chi de dat ten file an toan (vd: sk0005).
     search_code = normalize_exam_code(exam_code) or "exam"
-    clean_code = clean_exam_code(exam_code) or "exam"
+    clean_code = canonical_exam_code(exam_code) or "exam"
 
     topic_str = input("Nhap topic (mac dinh 1): ").strip()
     topic = int(topic_str) if topic_str.isdigit() else 1
@@ -838,20 +1066,23 @@ def main():
         # Tao mot context/page duy nhat, warm-up cong cu tim kiem mot lan,
         # roi tai su dung xuyen suot phien de giu cookie/session.
         context = browser.new_context()
-        try:
-            context.set_default_timeout(DEFAULT_OP_TIMEOUT)
-        except Exception:
-            pass
+        context.set_default_timeout(DEFAULT_OP_TIMEOUT)
         page = context.new_page()
         print("Warm-up DuckDuckGo (tao session)...")
-        warmup_search(page)
+        if not warmup_search(page):
+            print("  Canh bao: khong tai duoc DuckDuckGo, van thu crawl tiep.")
 
         for qnum in range(start_q, end_q + 1):
             print(f"\n[{qnum - start_q + 1}/{total}] cau {qnum}")
 
             result = None
+            no_link = False
             for attempt in range(1, RETRY_LIMIT + 1):
                 result = crawl_one_question(page, search_code, topic, qnum)
+                if result is NO_DISCUSSION_LINK:
+                    no_link = True
+                    print(f"  Bo qua cau {qnum}: khong tim thay link, khong retry.")
+                    break
                 if result:
                     break
                 print(f"  That bai lan {attempt}/{RETRY_LIMIT} cho cau {qnum}")
@@ -860,22 +1091,26 @@ def main():
                     print(f"  -> Thu lai sau {retry_wait:.1f} giay...")
                     time.sleep(retry_wait)
 
-            if result:
+            if result and result is not NO_DISCUSSION_LINK:
                 upsert(all_data, result)
                 added += 1
                 print(f"  Luu cau {qnum} vao output/{filename}")
             else:
                 # Khong lay duoc: in ra man hinh + note vao file, roi crawl tiep.
                 failed.append(qnum)
+                error_msg = "Khong tim thay link discussion" if no_link else "Khong lay duoc cau hoi"
                 print(f"  KHONG LAY DUOC cau {qnum} -> ghi chu vao file va bo qua")
                 upsert(all_data, {
                     "exam_code": search_code,
                     "topic": topic,
                     "question_num": qnum,
                     "question": "",
+                    "question_images": [],
+                    "options": [],
+                    "suggested_answers": [],
                     "answers": [],
                     "url": "",
-                    "error": "Khong lay duoc cau hoi"
+                    "error": error_msg
                 })
             save_progress(all_data, filename)
 
@@ -891,6 +1126,14 @@ def main():
             print(f"Khong lay duoc {len(failed)} cau: {', '.join(str(q) for q in failed)}")
         print(f"Ket qua: output/{filename}")
         print("="*60)
+
+        choice = input("\nConvert sang HTML + DOCX? (y/N): ").strip().lower()
+        if choice == "y":
+            try:
+                convert_to_html(filepath)
+                convert_to_docx(filepath)
+            except Exception as e:
+                print(f"  Loi convert: {e}")
     finally:
         safe_close(page)
         safe_close(context)
