@@ -12,7 +12,8 @@ Tự động thu thập câu hỏi từ ExamTopics, lưu kết quả dưới d�
 * Lọc link chính xác theo slug — bỏ qua trang tổng hợp, câu/mã đề khác và link wrapper.
 * Thu thập đầy đủ: đề bài, hình ảnh, các lựa chọn (A/B/C/D...), đáp án gợi ý, bình luận cộng đồng.
 * Lấy cả URL hình trong đề bài và trong từng lựa chọn (nếu có).
-* Chuyển kết quả sang HTML (tự chứa CSS, highlight đáp án đúng) và DOCX (ảnh nhúng sẵn) sau khi crawl xong.
+* Chuyển kết quả sang HTML tự chứa CSS/JS và DOCX (ảnh nhúng sẵn) sau khi crawl xong.
+* Trang HTML có hai chế độ: ôn tập chủ động (tìm kiếm, che/mở đáp án, đánh dấu câu cần ôn) và thi thử có hẹn giờ/chấm điểm.
 * Tải ảnh song song khi convert DOCX (10 luồng).
 * Fallback tải trang qua HTTP khi trình duyệt load trang discussion bị treo.
 * Dọn tab sau mỗi câu, chỉ giữ lại một tab tìm kiếm.
@@ -115,7 +116,7 @@ Ghi chú:
 | File | Mô tả |
 |---|---|
 | `{exam}_questions.json` | Dữ liệu gốc |
-| `{exam}_questions.html` | Xem trực tiếp trên trình duyệt, đáp án highlight xanh ngay dưới câu, bình luận bấm để mở/đóng |
+| `{exam}_questions.html` | Trang ôn tập responsive, đáp án che mặc định, có tìm kiếm/đánh dấu câu cần ôn và chế độ thi thử |
 | `{exam}_questions.docx` | Mở bằng Word/LibreOffice, đáp án in đậm xanh + dấu ✓, ảnh nhúng sẵn — tự convert sang PDF nếu cần |
 
 ## Cấu hình
