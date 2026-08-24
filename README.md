@@ -1,6 +1,6 @@
 # ExamTopics Crawler
 
-Tự động thu thập câu hỏi từ ExamTopics và lưu kết quả dưới dạng JSON.
+Tự động thu thập câu hỏi từ ExamTopics, lưu kết quả dưới dạng JSON, sau đó chuyển sang HTML và DOCX để ôn tập.
 
 ## Tính năng
 
@@ -12,6 +12,8 @@ Tự động thu thập câu hỏi từ ExamTopics và lưu kết quả dưới 
 * Lọc link chính xác theo slug — bỏ qua trang tổng hợp, câu/mã đề khác và link wrapper.
 * Thu thập đầy đủ: đề bài, hình ảnh, các lựa chọn (A/B/C/D...), đáp án gợi ý, bình luận cộng đồng.
 * Lấy cả URL hình trong đề bài và trong từng lựa chọn (nếu có).
+* Chuyển kết quả sang HTML (tự chứa CSS, highlight đáp án đúng) và DOCX (ảnh nhúng sẵn) sau khi crawl xong.
+* Tải ảnh song song khi convert DOCX (10 luồng).
 * Fallback tải trang qua HTTP khi trình duyệt load trang discussion bị treo.
 * Dọn tab sau mỗi câu, chỉ giữ lại một tab tìm kiếm.
 * Hỗ trợ mã đề nhiều định dạng: gạch nối, gạch dưới, dấu chấm (`sk0-005`, `az-104`, `FCSS_NST_SE-7.6`).
@@ -61,6 +63,14 @@ Nhap topic (mac dinh 1): 1
 Nhap pham vi cau (vd: 1-10, hoac de trong lay 1-120): 1-50
 ```
 
+Sau khi crawl xong, tool hỏi:
+
+```
+Convert sang HTML + DOCX? (y/N): y
+HTML: output/sk0005_questions.html
+DOCX: output/sk0005_questions.docx
+```
+
 ## Cách hoạt động
 
 Với mỗi câu hỏi, tool tra URL trang discussion theo thứ tự:
@@ -71,7 +81,9 @@ Với mỗi câu hỏi, tool tra URL trang discussion theo thứ tự:
 
 ## Kết quả
 
-Lưu tại `output/{exam_code}_questions.json`, mỗi câu có dạng:
+Crawl lưu tại `output/{exam_code}_questions.json`. Convert sinh thêm `.html` và `.docx` cùng thư mục.
+
+JSON mỗi câu có dạng:
 
 ```json
 {
@@ -97,6 +109,14 @@ Ghi chú:
 * `question_images` và `options[].images` chỉ lưu URL, không tải file ảnh về máy.
 * `suggested_answers` là danh sách — hỗ trợ câu "Choose two/three".
 * Câu không có hình thì các trường ảnh là mảng rỗng.
+
+### File đầu ra
+
+| File | Mô tả |
+|---|---|
+| `{exam}_questions.json` | Dữ liệu gốc |
+| `{exam}_questions.html` | Xem trực tiếp trên trình duyệt, đáp án highlight xanh ngay dưới câu, bình luận bấm để mở/đóng |
+| `{exam}_questions.docx` | Mở bằng Word/LibreOffice, đáp án in đậm xanh + dấu ✓, ảnh nhúng sẵn — tự convert sang PDF nếu cần |
 
 ## Cấu hình
 
