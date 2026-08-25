@@ -1,4 +1,5 @@
 cloakbrowser
 httpx
+playwright
 python-docx
 Pillow

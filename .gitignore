@@ -4,6 +4,7 @@ venv
 #cache
 __pycache__
 
-#output json
+# output artifacts (json/html/docx)
+output/
 
 *.json

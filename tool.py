@@ -1726,21 +1726,33 @@ def main():
                 print(f"  Luu cau {qnum} vao output/{filename}")
             else:
                 # Khong lay duoc: in ra man hinh + note vao file, roi crawl tiep.
+                # Chi ghi error record neu CHUA co du lieu tot cho cau nay.
+                # Tranh truong hop re-crawl fail tam thoi lam mat du lieu tot da crawl tu lan truoc.
                 failed.append(qnum)
                 error_msg = "Khong tim thay link discussion" if no_link else "Khong lay duoc cau hoi"
-                print(f"  KHONG LAY DUOC cau {qnum} -> ghi chu vao file va bo qua")
-                upsert(all_data, {
-                    "exam_code": search_code,
-                    "topic": topic,
-                    "question_num": qnum,
-                    "question": "",
-                    "question_images": [],
-                    "options": [],
-                    "suggested_answers": [],
-                    "answers": [],
-                    "url": "",
-                    "error": error_msg
-                })
+                has_good_data = any(
+                    isinstance(rec, dict)
+                    and rec.get("topic") == topic
+                    and rec.get("question_num") == qnum
+                    and rec.get("question")
+                    for rec in all_data
+                )
+                if not has_good_data:
+                    print(f"  KHONG LAY DUOC cau {qnum} -> ghi chu vao file va bo qua")
+                    upsert(all_data, {
+                        "exam_code": search_code,
+                        "topic": topic,
+                        "question_num": qnum,
+                        "question": "",
+                        "question_images": [],
+                        "options": [],
+                        "suggested_answers": [],
+                        "answers": [],
+                        "url": "",
+                        "error": error_msg
+                    })
+                else:
+                    print(f"  Khong lay duoc cau {qnum} nhung giu du lieu tot tu lan truoc.")
             save_progress(all_data, filename)
 
             # Nghi ngau nhien giua cac cau (chong nhip deu), bo qua sau cau cuoi.
