@@ -393,6 +393,7 @@ body:not(.answers-hidden) .answer-reveal { display: none; }
 </label>
 <button id="toggle-answers" class="button" type="button" aria-pressed="false">Show all answers</button>
 <label class="filter-check" for="only-review"><input id="only-review" type="checkbox"> Review only</label>
+<button id="clear-reviews" class="button" type="button">Clear all reviews</button>
 <details class="question-picker">
 <summary>Jump to question</summary>
 <nav class="question-nav" aria-label="Question list">{''.join(nav_items)}</nav>
@@ -526,6 +527,7 @@ const visibleStatus = document.getElementById('visible-status');
 const reviewCount = document.getElementById('review-count');
 const emptyState = document.getElementById('empty-state');
 const questionPicker = document.querySelector('.question-picker');
+const clearReviewsBtn = document.getElementById('clear-reviews');
 let examQuestions = [];
 let examDuration = 0;
 let timerId = null;
@@ -803,6 +805,11 @@ document.addEventListener('keydown', event => {
   }
 });
 document.getElementById('exam-count').max = questions.length;
+clearReviewsBtn.addEventListener('click', () => {
+  saveReviewKeys(new Set());
+  syncReviewState(new Set());
+  applyStudyFilters();
+});
 const desktopLayout = window.matchMedia('(min-width: 861px)');
 const syncQuestionPicker = event => { questionPicker.open = event.matches; };
 syncQuestionPicker(desktopLayout);
