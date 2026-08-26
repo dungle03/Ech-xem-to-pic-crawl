@@ -28,7 +28,13 @@ DEFAULT_OP_TIMEOUT = 30000
 
 # Sentinel rieng cho case search DDG + Google khong ra link dung cau. Case nay
 # khong retry vi moi retry lai ton them 2 lan search engine nhung ket qua nhu cu.
-NO_DISCUSSION_LINK = object()
+NO_DISCUSSION_BLOCKED = object()
+NO_DISCUSSION_MISSING = object()
+
+SEARCH_OK = "ok"
+SEARCH_EMPTY = "empty"
+SEARCH_BLOCKED = "blocked"
+SEARCH_ERROR = "error"
 
 _IMG_HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
 _IMG_CACHE = {}
@@ -1080,23 +1086,62 @@ def _accept_consent(page):
         except Exception:
             continue
 
+
+_BLOCK_SELECTORS = (
+    "#anomaly",
+    "#challenge-form",
+    "#captcha",
+    ".g-recaptcha",
+    'iframe[src*="recaptcha"]',
+)
+_BLOCK_TEXT = (
+    "unfortunately, bots use duckduckgo too",
+    "verify that you're a real person",
+    "unusual traffic from your computer network",
+    "just a moment...",
+    "attention required",
+)
+
+
+def _search_is_blocked(page):
+    """Nhan biet man hinh CAPTCHA/anomaly cua DuckDuckGo hoac Google."""
+    try:
+        if "/sorry/" in page.url.lower():
+            return True
+        for selector in _BLOCK_SELECTORS:
+            if page.query_selector(selector):
+                return True
+        state = page.evaluate(
+            "() => ({title: document.title || '', text: document.body?.innerText.slice(0, 4000).toLowerCase() || ''})"
+        )
+        title = state.get("title", "").lower()
+        text = state.get("text", "")
+        return any(marker in title or marker in text for marker in _BLOCK_TEXT)
+    except Exception:
+        return False
+
 def search_engine(page, query, engine="duckduckgo"):
-    """Go query vao o tim kiem cua engine (duckduckgo/google) nhu nguoi that.
+    """Go query vao o tim kiem va tra ve trang thai search.
 
     Moi lan deu quay ve trang chu engine truoc roi moi go vao o tim kiem, nen
     o luon sach (tranh query bi noi chong), dong thoi van giu cookie/session vi
     context duoc tai su dung xuyen suot phien.
-    Tra ve True neu search thanh cong, False neu that bai.
+    Tra ve `SEARCH_OK` khi co ket qua hien thi, `SEARCH_EMPTY` khi search binh
+    thuong nhung khong co ket qua, `SEARCH_BLOCKED` khi CAPTCHA/challenge, va
+    `SEARCH_ERROR` khi khong thao tac duoc trang.
     """
     cfg = SEARCH_ENGINES.get(engine)
     if not cfg:
         print(f"  Engine khong ho tro: {engine}")
-        return False
+        return SEARCH_ERROR
 
     # Luon ve trang chu de co o tim kiem trong, sach.
     if not safe_goto(page, cfg["home"]):
         print(f"  Khong tai duoc {engine}")
-        return False
+        return SEARCH_BLOCKED
+    if _search_is_blocked(page):
+        print(f"  {engine} dang hien CAPTCHA/challenge")
+        return SEARCH_BLOCKED
     time.sleep(random.uniform(0.5, 1.0))
 
     if cfg["has_consent"]:
@@ -1113,7 +1158,7 @@ def search_engine(page, query, engine="duckduckgo"):
             continue
     if not search_box:
         print(f"  Khong tim thay o tim kiem {engine}")
-        return False
+        return SEARCH_BLOCKED
 
     # Click vao o, xoa sach noi dung cu (phong khi con sot), go query moi.
     try:
@@ -1135,10 +1180,11 @@ def search_engine(page, query, engine="duckduckgo"):
         page.keyboard.press("Enter")
     except Exception as e:
         print(f"  Loi go query: {e}")
-        return False
+        return SEARCH_ERROR
 
     # Cho ket qua hien. Ket qua render bat dong bo SAU khi domcontentloaded
     # da fire, nen phai doi tan element ket qua xuat hien, khong sleep cung.
+    got_results = False
     try:
         page.wait_for_load_state("domcontentloaded", timeout=DEFAULT_OP_TIMEOUT)
     except PlaywrightTimeoutError:
@@ -1146,13 +1192,17 @@ def search_engine(page, query, engine="duckduckgo"):
     for sel in cfg["result_selectors"]:
         try:
             page.wait_for_selector(sel, timeout=8000)
+            got_results = True
             break
         except PlaywrightTimeoutError:
             continue
         except Exception:
             continue
     time.sleep(random.uniform(0.8, 1.5))
-    return True
+    if _search_is_blocked(page):
+        print(f"  {engine} bi chan/CAPTCHA sau khi search")
+        return SEARCH_BLOCKED
+    return SEARCH_OK if got_results else SEARCH_EMPTY
 
 def is_examtopics_discussion_url(url):
     """Kiem tra URL da giai ma co tro den trang discussion ExamTopics khong."""
@@ -1242,6 +1292,14 @@ def extract_matching_link(page, exam_code, topic, qnum):
                 return candidate
     return None
 
+
+def no_link_result(primary_status, fallback_status):
+    """Phan loai khong co link: bi chan hay thuc su khong co."""
+    unavailable = (SEARCH_BLOCKED, SEARCH_ERROR)
+    if primary_status in unavailable or fallback_status in unavailable:
+        return NO_DISCUSSION_BLOCKED
+    return NO_DISCUSSION_MISSING
+
 def find_discussion_link(page, exam_code, topic, qnum):
     """Tim URL discussion khop cau hoi. Thu DuckDuckGo truoc, khong thay -> Google.
 
@@ -1252,18 +1310,25 @@ def find_discussion_link(page, exam_code, topic, qnum):
              f"discussion site:examtopics.com")
 
     # 1. DuckDuckGo (engine chinh, it CAPTCHA)
-    if search_engine(page, query, "duckduckgo"):
+    ddg_status = search_engine(page, query, "duckduckgo")
+    if ddg_status == SEARCH_OK:
         href = extract_matching_link(page, exam_code, topic, qnum)
         if href:
             return href
-    print("  DuckDuckGo khong co link dung cau, thu Google...")
+    if ddg_status == SEARCH_BLOCKED:
+        print("  DuckDuckGo bi chan/CAPTCHA, thu Google...")
+    elif ddg_status == SEARCH_EMPTY:
+        print("  DuckDuckGo khong tra ve ket qua nao, thu Google...")
+    else:
+        print("  DuckDuckGo khong co link dung cau, thu Google...")
 
     # 2. Google (fallback)
-    if search_engine(page, query, "google"):
+    google_status = search_engine(page, query, "google")
+    if google_status == SEARCH_OK:
         href = extract_matching_link(page, exam_code, topic, qnum)
         if href:
             return href
-    return None
+    return no_link_result(ddg_status, google_status)
 
 def close_extra_tabs(main_page):
     """Dong moi tab tru tab DuckDuckGo chinh (main_page).
@@ -1355,9 +1420,12 @@ def crawl_one_question(page, exam_code, topic, qnum):
         #      Chi nhan link khop CHINH XAC exam_code + topic + qnum de khong lay
         #      nham cau khac/ma de khac/trang tong hop.
         href = find_discussion_link(page, exam_code, topic, qnum)
-        if not href:
-            print(f"  Khong tim thay link examtopics dung cau {qnum} (DDG + Google deu khong ra)")
-            return NO_DISCUSSION_LINK
+        if href is NO_DISCUSSION_BLOCKED:
+            print(f"  Bo qua cau {qnum}: search bi chan/CAPTCHA hoac khong truy cap duoc, khong retry.")
+            return NO_DISCUSSION_BLOCKED
+        if href is NO_DISCUSSION_MISSING:
+            print(f"  Bo qua cau {qnum}: ca DuckDuckGo va Google da search nhung khong co link dung cau, khong retry.")
+            return NO_DISCUSSION_MISSING
         print(f"  Tim thay: {href}")
 
         # 3. Mo tab discussion. Uu tien mo tab moi (giong nguoi bam vao ket qua),
@@ -1695,6 +1763,8 @@ def main():
 
     added = 0
     failed = []
+    failed_blocked = []
+    failed_missing = []
     context = None
     page = None
     try:
@@ -1712,14 +1782,18 @@ def main():
             print(f"\n[{qnum - start_q + 1}/{total}] cau {qnum}")
 
             result = None
-            no_link = False
+            no_link_reason = ""
             for attempt in range(1, RETRY_LIMIT + 1):
                 result = crawl_one_question(page, search_code, topic, qnum)
-                if result is NO_DISCUSSION_LINK:
-                    no_link = True
-                    print(f"  Bo qua cau {qnum}: khong tim thay link, khong retry.")
+                if result is NO_DISCUSSION_BLOCKED:
+                    no_link_reason = ("Khong tim thay link discussion vi search bi "
+                                      "chan/CAPTCHA hoac khong truy cap duoc")
                     break
-                if result:
+                if result is NO_DISCUSSION_MISSING:
+                    no_link_reason = ("Khong tim thay link discussion vi ca "
+                                      "DuckDuckGo va Google da search nhung khong co link dung cau")
+                    break
+                if isinstance(result, dict):
                     break
                 print(f"  That bai lan {attempt}/{RETRY_LIMIT} cho cau {qnum}")
                 if attempt < RETRY_LIMIT:
@@ -1727,7 +1801,7 @@ def main():
                     print(f"  -> Thu lai sau {retry_wait:.1f} giay...")
                     time.sleep(retry_wait)
 
-            if result and result is not NO_DISCUSSION_LINK:
+            if isinstance(result, dict):
                 upsert(all_data, result)
                 added += 1
                 print(f"  Luu cau {qnum} vao output/{filename}")
@@ -1736,7 +1810,11 @@ def main():
                 # Chi ghi error record neu CHUA co du lieu tot cho cau nay.
                 # Tranh truong hop re-crawl fail tam thoi lam mat du lieu tot da crawl tu lan truoc.
                 failed.append(qnum)
-                error_msg = "Khong tim thay link discussion" if no_link else "Khong lay duoc cau hoi"
+                if result is NO_DISCUSSION_BLOCKED:
+                    failed_blocked.append(qnum)
+                elif result is NO_DISCUSSION_MISSING:
+                    failed_missing.append(qnum)
+                error_msg = no_link_reason or "Khong lay duoc cau hoi"
                 has_good_data = any(
                     isinstance(rec, dict)
                     and rec.get("topic") == topic
@@ -1772,6 +1850,10 @@ def main():
         print(f"Hoan tat! Lay duoc {added}/{total} cau (tong file: {len(all_data)}).")
         if failed:
             print(f"Khong lay duoc {len(failed)} cau: {', '.join(str(q) for q in failed)}")
+        if failed_blocked:
+            print(f"  Vi search bi chan/CAPTCHA: {', '.join(map(str, failed_blocked))}")
+        if failed_missing:
+            print(f"  Vi thuc su khong co discussion: {', '.join(map(str, failed_missing))}")
         print(f"Ket qua: output/{filename}")
         print("="*60)
 

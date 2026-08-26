@@ -4,8 +4,14 @@ from unittest.mock import MagicMock
 from tool import (
     canonical_exam_code,
     link_matches_question,
+    no_link_result,
+    NO_DISCUSSION_BLOCKED,
+    NO_DISCUSSION_MISSING,
     normalize_exam_code,
     parse_range,
+    SEARCH_BLOCKED,
+    SEARCH_EMPTY,
+    SEARCH_OK,
     upsert,
     unwrap_search_href,
 )
@@ -97,6 +103,15 @@ class TestUnwrapSearchHref(unittest.TestCase):
         raw = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.examtopics.com%2Fdiscussions%2Fa%2Fview%2F1-exam-sk0-005-topic-1-question-1-discussion%2F"
         result = unwrap_search_href(raw, "https://duckduckgo.com")
         self.assertTrue(any("examtopics.com" in u for u in result))
+
+
+class TestNoLinkResult(unittest.TestCase):
+    def test_google_blocked(self):
+        self.assertIs(no_link_result(SEARCH_OK, SEARCH_BLOCKED), NO_DISCUSSION_BLOCKED)
+
+    def test_really_missing(self):
+        self.assertIs(no_link_result(SEARCH_OK, SEARCH_EMPTY), NO_DISCUSSION_MISSING)
+        self.assertIs(no_link_result(SEARCH_EMPTY, SEARCH_EMPTY), NO_DISCUSSION_MISSING)
 
 
 if __name__ == "__main__":
