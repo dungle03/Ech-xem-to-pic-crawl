@@ -51,6 +51,8 @@ Lần chạy đầu, CloakBrowser tự tải Chromium (~697MB) về `~/.cloakbro
 
 ## Sử dụng
 
+### Chạy tương tác (Interactive)
+
 ```bash
 source venv/bin/activate
 python3 tool.py
@@ -70,6 +72,16 @@ Sau khi crawl xong, tool hỏi:
 Convert sang HTML + DOCX? (y/N): y
 HTML: output/sk0005_questions.html
 DOCX: output/sk0005_questions.docx
+```
+
+### Chạy bằng tham số dòng lệnh (CLI Arguments)
+
+```bash
+# Crawl tự động và tự convert sau khi hoàn thành (-y)
+python3 tool.py -e FCSS_NST_SE-7.6 -t 1 -r 1-50 -y
+
+# Chỉ convert file JSON đã có sang HTML + DOCX (không cần mở browser)
+python3 tool.py --convert-only output/sk0005_questions.json
 ```
 
 ## Cách hoạt động

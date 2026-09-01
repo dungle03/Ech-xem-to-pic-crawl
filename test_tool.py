@@ -1,14 +1,28 @@
+import json
+import os
+import shutil
+import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+from io import BytesIO
+
+from PIL import Image as PILImage
 
 from tool import (
+    _fetch_image,
+    _fetch_image_bytes,
+    _preload_images,
+    _IMG_CACHE,
+    build_html,
     canonical_exam_code,
     link_matches_question,
+    load_all,
     no_link_result,
     NO_DISCUSSION_BLOCKED,
     NO_DISCUSSION_MISSING,
     normalize_exam_code,
     parse_range,
+    save_progress,
     SEARCH_BLOCKED,
     SEARCH_EMPTY,
     SEARCH_OK,
@@ -47,6 +61,12 @@ class TestNormalizeExamCode(unittest.TestCase):
     def test_strip_special(self):
         self.assertEqual(normalize_exam_code("  EX-200!@# "), "ex-200")
 
+    def test_none_input(self):
+        self.assertEqual(normalize_exam_code(None), "")
+
+    def test_empty_input(self):
+        self.assertEqual(normalize_exam_code(""), "")
+
 
 class TestCanonicalExamCode(unittest.TestCase):
     def test_strips_separators(self):
@@ -54,6 +74,9 @@ class TestCanonicalExamCode(unittest.TestCase):
 
     def test_fcss(self):
         self.assertEqual(canonical_exam_code("FCSS_NST_SE-7.6"), "fcssnstse76")
+
+    def test_none_input(self):
+        self.assertEqual(canonical_exam_code(None), "")
 
 
 class TestLinkMatchesQuestion(unittest.TestCase):
@@ -92,6 +115,11 @@ class TestUpsert(unittest.TestCase):
         self.assertEqual(len(self.data), 2)
         self.assertEqual(self.data[1]["question"], "Updated")
 
+    def test_invalid_record(self):
+        upsert(self.data, None)
+        upsert(self.data, "not-a-dict")
+        self.assertEqual(len(self.data), 2)
+
 
 class TestUnwrapSearchHref(unittest.TestCase):
     def test_direct_link(self):
@@ -114,5 +142,138 @@ class TestNoLinkResult(unittest.TestCase):
         self.assertIs(no_link_result(SEARCH_EMPTY, SEARCH_EMPTY), NO_DISCUSSION_MISSING)
 
 
+class TestImageCache(unittest.TestCase):
+    def setUp(self):
+        _IMG_CACHE.clear()
+
+    def test_fetch_image_returns_fresh_stream(self):
+        img = PILImage.new("RGB", (10, 10), color="blue")
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        raw = buf.getvalue()
+
+        _IMG_CACHE["https://img.test/sample.png"] = raw
+
+        stream1 = _fetch_image("https://img.test/sample.png")
+        self.assertIsNotNone(stream1)
+        self.assertEqual(stream1.tell(), 0)
+        data1 = stream1.read()
+        self.assertEqual(len(data1), len(raw))
+        self.assertEqual(stream1.tell(), len(raw))
+
+        # Subsequent call must return a new stream at position 0
+        stream2 = _fetch_image("https://img.test/sample.png")
+        self.assertIsNotNone(stream2)
+        self.assertEqual(stream2.tell(), 0)
+        data2 = stream2.read()
+        self.assertEqual(len(data2), len(raw))
+
+    def test_preload_images_handles_none_fields(self):
+        # Must not raise exceptions with None or malformed values
+        questions = [
+            {
+                "question": "Q1",
+                "question_images": None,
+                "options": None,
+            },
+            {
+                "question": "Q2",
+                "question_images": ["https://img.test/pic.png"],
+                "options": [{"letter": "A", "images": None}, "not-a-dict"],
+            },
+        ]
+        _IMG_CACHE["https://img.test/pic.png"] = b"cached"
+        _preload_images(questions)
+        self.assertIn("https://img.test/pic.png", _IMG_CACHE)
+
+
+class TestStorageAndAtomicSave(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_save_progress_atomic(self):
+        with patch("tool.OUTPUT_DIR", self.temp_dir):
+            data = [{"topic": 1, "question_num": 1, "question": "Test question"}]
+            success = save_progress(data, "test_out.json")
+            self.assertTrue(success)
+
+            loaded = load_all(os.path.join(self.temp_dir, "test_out.json"))
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0]["question"], "Test question")
+
+    def test_load_all_invalid_files(self):
+        # Non-existent
+        self.assertEqual(load_all(os.path.join(self.temp_dir, "nonexistent.json")), [])
+
+        # Invalid JSON
+        bad_json_path = os.path.join(self.temp_dir, "bad.json")
+        with open(bad_json_path, "w") as f:
+            f.write("{invalid json...")
+        self.assertEqual(load_all(bad_json_path), [])
+
+        # Non-list JSON
+        dict_json_path = os.path.join(self.temp_dir, "dict.json")
+        with open(dict_json_path, "w") as f:
+            f.write('{"key": "value"}')
+        self.assertEqual(load_all(dict_json_path), [])
+
+
+class TestBuildHtml(unittest.TestCase):
+    def test_build_html_with_none_fields(self):
+        questions = [
+            {
+                "exam_code": "test-exam",
+                "topic": 1,
+                "question_num": 1,
+                "question": "What is <script>alert(1)</script>?",
+                "question_images": None,
+                "options": None,
+                "suggested_answers": None,
+                "answers": None,
+            },
+            {
+                "exam_code": "test-exam",
+                "topic": 1,
+                "question_num": 2,
+                "question": "Normal question",
+                "question_images": ["https://img.test/q2.png"],
+                "options": [
+                    {"letter": "A", "text": "Option A", "images": None, "is_correct": True},
+                    {"letter": "B", "text": "Option B", "images": ["https://img.test/b.png"], "is_correct": False},
+                ],
+                "suggested_answers": ["A"],
+                "answers": ["Comment 1"],
+            },
+        ]
+        html_str = build_html(questions, "test-exam")
+        self.assertIn("<!DOCTYPE html>", html_str)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html_str)
+        self.assertIn("Option A", html_str)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestParseArgs(unittest.TestCase):
+    def test_parse_args_defaults(self):
+        with patch("sys.argv", ["tool.py"]):
+            from tool import parse_args
+            args = parse_args()
+            self.assertIsNone(args.exam)
+            self.assertIsNone(args.topic)
+            self.assertIsNone(args.range)
+            self.assertFalse(args.yes)
+            self.assertIsNone(args.convert_only)
+
+    def test_parse_args_custom(self):
+        with patch("sys.argv", ["tool.py", "-e", "az-104", "-t", "2", "-r", "1-20", "-y"]):
+            from tool import parse_args
+            args = parse_args()
+            self.assertEqual(args.exam, "az-104")
+            self.assertEqual(args.topic, 2)
+            self.assertEqual(args.range, "1-20")
+            self.assertTrue(args.yes)
