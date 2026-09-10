@@ -1,5 +1,5 @@
-cloakbrowser
-httpx
-playwright
-python-docx
-Pillow
+cloakbrowser==0.5.8
+httpx==0.28.1
+playwright==1.60.0
+python-docx==1.2.0
+Pillow==12.3.0

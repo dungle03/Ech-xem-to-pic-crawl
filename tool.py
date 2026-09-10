@@ -72,7 +72,7 @@ def _fetch_image_bytes(url, client=None):
             img.save(buf, format="PNG")
             data = buf.getvalue()
     except Exception:
-        data = None
+        return None
     _IMG_CACHE[url] = data
     return data
 
@@ -1025,7 +1025,7 @@ def link_matches_question(href, exam_code, topic, qnum):
     (vd h12-711_v4.0 -> h12-711_v40).
     Phan '-discussion' ngay sau qnum chong viec question-2 khop nham question-20.
     """
-    if not href or 'examtopics.com/discussions' not in href:
+    if not href or 'examtopics.com/discussions' not in href.lower():
         return False
     href = href.lower()
     match = _RE_DISCUSSION_SLUG.search(href)
@@ -1252,16 +1252,20 @@ def search_engine(page, query, engine="duckduckgo"):
 def is_examtopics_discussion_url(url):
     """Kiem tra URL da giai ma co tro den trang discussion ExamTopics khong."""
     try:
-        parsed = urlparse(url)
+        raw = str(url or "").strip()
+        if raw.startswith("www."):
+            raw = "https://" + raw
+        elif raw.startswith("//"):
+            raw = "https:" + raw
+        parsed = urlparse(raw)
     except Exception:
         return False
     host = (parsed.netloc or "").lower()
     if host.startswith("www."):
         host = host[4:]
     return (
-        parsed.scheme in ("http", "https")
-        and host == "examtopics.com"
-        and "/discussions/" in parsed.path
+        (host == "examtopics.com" or host.endswith(".examtopics.com"))
+        and parsed.path.lower().startswith("/discussions/")
     )
 
 def unwrap_search_href(raw_href, base_url):
@@ -1277,6 +1281,12 @@ def unwrap_search_href(raw_href, base_url):
         if not url:
             return
         url = unquote(str(url).strip())
+        if url.startswith("www."):
+            url = "https://" + url
+        elif url.startswith("//"):
+            url = "https:" + url
+        elif url.startswith("/discussions/"):
+            url = "https://www.examtopics.com" + url
         if base_url and url.startswith("/"):
             url = urljoin(base_url, url)
         if url and url not in candidates:
@@ -1301,6 +1311,8 @@ def unwrap_search_href(raw_href, base_url):
         decoded = unquote(current)
         for match in _RE_EXAMTOPICS_URL.findall(decoded):
             add(match)
+        for m in re.findall(r'www\.examtopics\.com/[^\s&"\'<>]+', decoded, re.I):
+            add("https://" + m)
 
     return candidates
 
@@ -1598,6 +1610,8 @@ def crawl_one_question(page, exam_code, topic, qnum):
 
         try:
             url = new_tab.url
+            if not url or url == "about:blank" or "examtopics.com" not in url.lower():
+                url = href
         except Exception:
             url = href
 
