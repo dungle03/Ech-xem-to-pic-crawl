@@ -21,6 +21,9 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 MIN_DELAY = 2
 MAX_DELAY = 5
 RETRY_LIMIT = 3
+# So cau bi chan/CAPTCHA lien tiep truoc khi dung phien som.
+# Muc dich: khong dot nhip search engine them khi da bi chan ro rang.
+BLOCKED_ABORT_STREAK = 3
 OUTPUT_DIR = "output"
 
 # Timeout mac dinh (ms) cho cac thao tac Playwright de tranh treo vo han.
@@ -1825,6 +1828,8 @@ def main():
             print("  Canh bao: khong tai duoc DuckDuckGo, van thu crawl tiep.")
 
         interrupted = False
+        aborted = False
+        blocked_streak = 0
         try:
             for qnum in range(start_q, end_q + 1):
                 print(f"\n[{qnum - start_q + 1}/{total}] cau {qnum}")
@@ -1848,6 +1853,11 @@ def main():
                         retry_wait = random.uniform(3, 6)
                         print(f"  -> Thu lai sau {retry_wait:.1f} giay...")
                         time.sleep(retry_wait)
+
+                if result is NO_DISCUSSION_BLOCKED:
+                    blocked_streak += 1
+                else:
+                    blocked_streak = 0
 
                 if isinstance(result, dict):
                     upsert(all_data, result)
@@ -1888,6 +1898,12 @@ def main():
                         print(f"  Khong lay duoc cau {qnum} nhung giu du lieu tot tu lan truoc.")
                 save_progress(all_data, filename)
 
+                if blocked_streak >= BLOCKED_ABORT_STREAK:
+                    print(f"\n[!] Bi chan/CAPTCHA {BLOCKED_ABORT_STREAK} cau lien tiep "
+                          f"-> dung phien som. Data da luu an toan, chay lai sau.")
+                    aborted = True
+                    break
+
                 # Nghi ngau nhien giua cac cau (chong nhip deu), bo qua sau cau cuoi.
                 if qnum < end_q:
                     wait = random.uniform(MIN_DELAY, MAX_DELAY)
@@ -1898,7 +1914,7 @@ def main():
             print("\n\n[!] Da dung theo yeu cau nguoi dung (Ctrl+C).")
 
         print("\n"+"="*60)
-        status_label = "Tam dung!" if interrupted else "Hoan tat!"
+        status_label = "Tam dung!" if interrupted else ("Dung som vi bi chan!" if aborted else "Hoan tat!")
         print(f"{status_label} Lay duoc {added}/{total} cau trong phien nay (tong file: {len(all_data)}).")
         if failed:
             print(f"Khong lay duoc {len(failed)} cau: {', '.join(str(q) for q in failed)}")
