@@ -119,7 +119,7 @@ JSON mỗi câu có dạng:
 
 Ghi chú:
 
-* `question_images` và `options[].images` chỉ lưu URL, không tải file ảnh về máy.
+* `question_images` và `options[].images` chỉ lưu URL trong JSON; HTML tự nhúng ảnh base64 nên mở offline không cần mạng.
 * `suggested_answers` là danh sách — hỗ trợ câu "Choose two/three".
 * Câu không có hình thì các trường ảnh là mảng rỗng.
 
@@ -128,7 +128,7 @@ Ghi chú:
 | File | Mô tả |
 |---|---|
 | `{exam}_questions.json` | Dữ liệu gốc |
-| `{exam}_questions.html` | Trang ôn tập responsive, đáp án che mặc định, có tìm kiếm/đánh dấu câu cần ôn và chế độ thi thử |
+| `{exam}_questions.html` | Trang ôn tập tự chứa (ảnh base64), đáp án che mặc định, có tìm kiếm/đánh dấu câu cần ôn và chế độ thi thử |
 | `{exam}_questions.docx` | Mở bằng Word/LibreOffice, đáp án in đậm xanh + dấu ✓, ảnh nhúng sẵn — tự convert sang PDF nếu cần |
 
 ## Cấu hình

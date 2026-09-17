@@ -4,6 +4,9 @@ venv
 #cache
 __pycache__
 
+# img disk cache (auto, speed up re-convert)
+output/.imgcache/
+
 # output artifacts (json/html/docx)
 output/
 

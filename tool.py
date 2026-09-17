@@ -144,7 +144,7 @@ def escape_html(text):
     return html.escape(str(text or ""), quote=True)
 
 
-def build_html(questions, exam_code, embed_images=False):
+def build_html(questions, exam_code, embed_images=True):
     def _url_to_src(url):
         """Tra ve src cho <img>: base64 data URI neu embed_images=True, URL neu False."""
         if not embed_images:
@@ -907,7 +907,7 @@ applyStudyFilters();
     return "\n".join(parts)
 
 
-def convert_to_html(json_path, embed_images=False):
+def convert_to_html(json_path, embed_images=True):
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     if not isinstance(data, list):
@@ -1765,8 +1765,6 @@ def parse_args():
     parser.add_argument("-r", "--range", help="Pham vi cau (vd: 1-50, 5)")
     parser.add_argument("-y", "--yes", action="store_true", help="Tu dong convert sang HTML va DOCX sau khi crawl")
     parser.add_argument("--convert-only", help="Duong dan file JSON can convert truc tiep sang HTML va DOCX")
-    parser.add_argument("--embed-images", action="store_true",
-                        help="Nhung anh vao HTML (base64) de mo offline")
     return parser.parse_args()
 
 
@@ -1779,7 +1777,7 @@ def main():
             print(f"Loi: Khong tim thay file {json_path}")
             return
         try:
-            convert_to_html(json_path, embed_images=args.embed_images)
+            convert_to_html(json_path)
             convert_to_docx(json_path)
         except Exception as e:
             print(f"Loi convert: {e}")
@@ -1979,7 +1977,7 @@ def main():
                 choice = input("\nConvert sang HTML + DOCX? (y/N): ").strip().lower()
             if choice == "y":
                 try:
-                    convert_to_html(filepath, embed_images=args.embed_images)
+                    convert_to_html(filepath)
                     convert_to_docx(filepath)
                 except Exception as e:
                     print(f"  Loi convert: {e}")
