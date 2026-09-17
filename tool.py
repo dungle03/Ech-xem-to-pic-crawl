@@ -145,22 +145,47 @@ def escape_html(text):
 
 
 def build_html(questions, exam_code, embed_images=True):
+    if embed_images:
+        _preload_images(questions)
+
     def _url_to_src(url):
         """Tra ve src cho <img>: base64 data URI neu embed_images=True, URL neu False."""
         if not embed_images:
             return escape_html(url)
-        data = _IMG_CACHE.get(url)
+        data = _fetch_image_bytes(url)
         if data:
             b64 = base64.b64encode(data).decode("ascii")
-            if data.startswith(b'\x89PNG'):
+            if data.startswith(b"\x89PNG"):
                 return f"data:image/png;base64,{b64}"
-            if data.startswith(b'\xff\xd8'):
+            if data.startswith(b"\xff\xd8"):
                 return f"data:image/jpeg;base64,{b64}"
+            if data.startswith(b"GIF8"):
+                return f"data:image/gif;base64,{b64}"
             return f"data:image/png;base64,{b64}"
         return escape_html(url)
 
     parts = []
-    exam_payload = json.dumps(questions, ensure_ascii=False).replace("</", "<\\/")
+    if embed_images:
+        payload_questions = []
+        for q in questions:
+            qc = dict(q)
+            if qc.get("question_images"):
+                qc["question_images"] = [_url_to_src(u) for u in qc["question_images"]]
+            if qc.get("options"):
+                opts = []
+                for opt in qc["options"]:
+                    if isinstance(opt, dict):
+                        oc = dict(opt)
+                        if oc.get("images"):
+                            oc["images"] = [_url_to_src(u) for u in oc["images"]]
+                        opts.append(oc)
+                    else:
+                        opts.append(opt)
+                qc["options"] = opts
+            payload_questions.append(qc)
+        exam_payload = json.dumps(payload_questions, ensure_ascii=False).replace("</", "<\\/")
+    else:
+        exam_payload = json.dumps(questions, ensure_ascii=False).replace("</", "<\\/")
     nav_items = []
     for index, question in enumerate(questions, 1):
         number = question.get("question_num", index)
@@ -915,6 +940,8 @@ def convert_to_html(json_path, embed_images=True):
     questions = [q for q in data if isinstance(q, dict) and q.get("question")]
     if not questions:
         raise ValueError("Khong co cau hoi hop le trong file.")
+    if embed_images:
+        _preload_images(questions)
     exam_code = questions[0].get("exam_code", "exam")
     html = build_html(questions, exam_code, embed_images=embed_images)
     out_path = os.path.splitext(json_path)[0] + ".html"
