@@ -1,5 +1,7 @@
 import time
 import json
+import hashlib
+import base64
 import os
 import re
 import random
@@ -25,6 +27,7 @@ RETRY_LIMIT = 3
 # Muc dich: khong dot nhip search engine them khi da bi chan ro rang.
 BLOCKED_ABORT_STREAK = 3
 OUTPUT_DIR = "output"
+_IMG_CACHE_DIR = os.path.join(OUTPUT_DIR, ".imgcache")
 
 # Timeout mac dinh (ms) cho cac thao tac Playwright de tranh treo vo han.
 DEFAULT_OP_TIMEOUT = 30000
@@ -54,29 +57,55 @@ _RE_DISCUSSION_SLUG = re.compile(
 _IMG_TIMEOUT = httpx.Timeout(connect=3.0, read=5.0, write=3.0, pool=3.0)
 
 
+def _img_cache_key(url):
+    return hashlib.md5(url.encode()).hexdigest()
+
+def _img_cache_path(url):
+    key = _img_cache_key(url)
+    return os.path.join(_IMG_CACHE_DIR, key)
+
 def _fetch_image_bytes(url, client=None):
+    # 1. Ram cache (nhanh nhat, reset khi restart)
     if url in _IMG_CACHE:
         return _IMG_CACHE[url]
+    # 2. Disk cache (khong can mang khi chay lai)
+    cache_path = _img_cache_path(url)
+    try:
+        if os.path.isfile(cache_path):
+            with open(cache_path, "rb") as f:
+                data = f.read()
+            _IMG_CACHE[url] = data
+            return data
+    except Exception:
+        pass
+    # 3. Tai tu mang
     try:
         if client:
             resp = client.get(url, timeout=_IMG_TIMEOUT)
         else:
             resp = httpx.get(url, headers=_IMG_HEADERS, timeout=_IMG_TIMEOUT, follow_redirects=True)
         resp.raise_for_status()
-        content = resp.content
+        raw = resp.content
         # Neu anh da la PNG, JPEG hoac GIF hop le, dung luon khong can encode lai qua Pillow
-        if (content.startswith(b'\x89PNG\r\n\x1a\n')
-                or content.startswith(b'\xff\xd8\xff')
-                or content.startswith(b'GIF8')):
-            data = content
+        if (raw.startswith(b'\x89PNG\r\n\x1a\n')
+                or raw.startswith(b'\xff\xd8\xff')
+                or raw.startswith(b'GIF8')):
+            data = raw
         else:
-            img = PILImage.open(BytesIO(content))
+            img = PILImage.open(BytesIO(raw))
             buf = BytesIO()
             img.save(buf, format="PNG")
             data = buf.getvalue()
     except Exception:
         return None
+    # Luu vao 2 tầng cache
     _IMG_CACHE[url] = data
+    try:
+        os.makedirs(_IMG_CACHE_DIR, exist_ok=True)
+        with open(cache_path, "wb") as f:
+            f.write(data)
+    except Exception:
+        pass
     return data
 
 
@@ -92,7 +121,9 @@ def _preload_images(questions):
         for opt in (q.get("options") or []):
             if isinstance(opt, dict):
                 urls.update(opt.get("images") or [])
-    todo = [u for u in urls if u not in _IMG_CACHE]
+    # Loai bo nhung anh da co trong RAM hoac tren dia
+    todo = [u for u in urls
+            if u not in _IMG_CACHE and not os.path.isfile(_img_cache_path(u))]
     if not todo:
         return
     total_imgs = len(todo)
@@ -113,7 +144,21 @@ def escape_html(text):
     return html.escape(str(text or ""), quote=True)
 
 
-def build_html(questions, exam_code):
+def build_html(questions, exam_code, embed_images=False):
+    def _url_to_src(url):
+        """Tra ve src cho <img>: base64 data URI neu embed_images=True, URL neu False."""
+        if not embed_images:
+            return escape_html(url)
+        data = _IMG_CACHE.get(url)
+        if data:
+            b64 = base64.b64encode(data).decode("ascii")
+            if data.startswith(b'\x89PNG'):
+                return f"data:image/png;base64,{b64}"
+            if data.startswith(b'\xff\xd8'):
+                return f"data:image/jpeg;base64,{b64}"
+            return f"data:image/png;base64,{b64}"
+        return escape_html(url)
+
     parts = []
     exam_payload = json.dumps(questions, ensure_ascii=False).replace("</", "<\\/")
     nav_items = []
@@ -466,7 +511,7 @@ body:not(.answers-hidden) .answer-reveal { display: none; }
         ]).split()).lower()
 
         image_html = "".join(
-            f'<img src="{escape_html(url)}" alt="Illustration for question {escape_html(number)}" loading="lazy">'
+            f'<img src="{_url_to_src(url)}" alt="Illustration for question {escape_html(number)}" loading="lazy">'
             for url in (question.get("question_images") or [])
         )
 
@@ -475,7 +520,7 @@ body:not(.answers-hidden) .answer-reveal { display: none; }
             letter = option.get("letter", "") or ""
             correct = bool(option.get("is_correct", False))
             option_images = "".join(
-                f'<img src="{escape_html(url)}" alt="Illustration for answer {escape_html(letter)}" loading="lazy">'
+                f'<img src="{_url_to_src(url)}" alt="Illustration for answer {escape_html(letter)}" loading="lazy">'
                 for url in (option.get("images") or [])
             )
             badge = '<span class="correct-badge">Correct answer</span>' if correct else ""
@@ -862,7 +907,7 @@ applyStudyFilters();
     return "\n".join(parts)
 
 
-def convert_to_html(json_path):
+def convert_to_html(json_path, embed_images=False):
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     if not isinstance(data, list):
@@ -871,7 +916,7 @@ def convert_to_html(json_path):
     if not questions:
         raise ValueError("Khong co cau hoi hop le trong file.")
     exam_code = questions[0].get("exam_code", "exam")
-    html = build_html(questions, exam_code)
+    html = build_html(questions, exam_code, embed_images=embed_images)
     out_path = os.path.splitext(json_path)[0] + ".html"
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -1720,6 +1765,8 @@ def parse_args():
     parser.add_argument("-r", "--range", help="Pham vi cau (vd: 1-50, 5)")
     parser.add_argument("-y", "--yes", action="store_true", help="Tu dong convert sang HTML va DOCX sau khi crawl")
     parser.add_argument("--convert-only", help="Duong dan file JSON can convert truc tiep sang HTML va DOCX")
+    parser.add_argument("--embed-images", action="store_true",
+                        help="Nhung anh vao HTML (base64) de mo offline")
     return parser.parse_args()
 
 
@@ -1732,7 +1779,7 @@ def main():
             print(f"Loi: Khong tim thay file {json_path}")
             return
         try:
-            convert_to_html(json_path)
+            convert_to_html(json_path, embed_images=args.embed_images)
             convert_to_docx(json_path)
         except Exception as e:
             print(f"Loi convert: {e}")
@@ -1932,7 +1979,7 @@ def main():
                 choice = input("\nConvert sang HTML + DOCX? (y/N): ").strip().lower()
             if choice == "y":
                 try:
-                    convert_to_html(filepath)
+                    convert_to_html(filepath, embed_images=args.embed_images)
                     convert_to_docx(filepath)
                 except Exception as e:
                     print(f"  Loi convert: {e}")
