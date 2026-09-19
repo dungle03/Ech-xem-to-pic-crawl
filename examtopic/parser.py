@@ -174,6 +174,26 @@ def parse_range(range_input):
         return None
     return None
 
+def _quarantine_corrupt_file(filepath, reason):
+    """Doi ten file hong sang <file>.corrupt-<timestamp> de KHONG mat du lieu.
+
+    Neu doc file that bai, ta khong duoc coi nhu chua co du lieu roi ghi de:
+    lam vay se xoa vinh vien toan bo du lieu cu. Thay vao do, giu nguyen file
+    (doi ten) de nguoi dung con co the cuu, va canh bao ro rang.
+    """
+    import time as _time
+    stamp = _time.strftime("%Y%m%d-%H%M%S")
+    backup = f"{filepath}.corrupt-{stamp}"
+    try:
+        os.replace(filepath, backup)
+        print(f"  [!] File cu bi loi ({reason}). Da giu lai ban goc tai: {backup}")
+        print("      Bat dau lai tu dau, nhung du lieu cu KHONG bi mat.")
+    except OSError as e:
+        print(f"  [!] File cu bi loi ({reason}) va khong the doi ten ({e}).")
+        print("      DUNG LAI de tranh ghi de mat du lieu. Hay sao luu file roi chay lai.")
+        raise SystemExit(1)
+
+
 def load_all(filepath):
     if not os.path.exists(filepath):
         return []
@@ -181,10 +201,10 @@ def load_all(filepath):
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError) as e:
-        print(f"  Khong doc duoc file cu ({e}), coi nhu chua co du lieu.")
+        _quarantine_corrupt_file(filepath, e)
         return []
     if not isinstance(data, list):
-        print("  File cu khong phai danh sach hop le, coi nhu chua co du lieu.")
+        _quarantine_corrupt_file(filepath, "khong phai danh sach")
         return []
     return data
 
@@ -216,20 +236,33 @@ def upsert(all_data, record):
     all_data.append(record)
     all_data.sort(key=_record_key)
 
+def _write_json_durable(temp_path, payload):
+    """Ghi payload ra temp_path roi fsync de du lieu thuc su xuong dia.
+
+    Khong fsync thi sau os.replace, du lieu co the con nam trong cache cua OS;
+    mat dien ngay sau do co the de lai file rong/hong. fsync truoc khi replace
+    dam bao file tam da ben vung truoc khi thay the file chinh.
+    """
+    with open(temp_path, "w", encoding="utf-8") as f:
+        f.write(payload)
+        f.flush()
+        os.fsync(f.fileno())
+
+
 def save_progress(data, filename):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     filepath = os.path.join(OUTPUT_DIR, filename)
     temp_path = filepath + ".tmp"
     try:
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        _write_json_durable(temp_path, payload)
         os.replace(temp_path, filepath)
         return True
     except Exception as e:
         print(f"  Loi JSON: {e}, thu fallback...")
         try:
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=True, indent=2)
+            payload = json.dumps(data, ensure_ascii=True, indent=2)
+            _write_json_durable(temp_path, payload)
             os.replace(temp_path, filepath)
             return True
         except Exception as e2:

@@ -124,6 +124,65 @@ class TestNoLinkResult(unittest.TestCase):
         self.assertEqual(no_link_result(SEARCH_BLOCKED, SEARCH_OK), NO_DISCUSSION_MISSING)
 
 
+class TestLoadAllDataSafety(unittest.TestCase):
+    """load_all KHONG duoc coi file hong la rong roi de save_progress ghi de
+    -> mat toan bo du lieu cu. File hong phai duoc cach ly (doi ten) chu khong
+    bi xoa.
+    """
+
+    def setUp(self):
+        import examtopic.parser as P
+        self.P = P
+        self.tmp = tempfile.mkdtemp()
+        self._old_dir = P.OUTPUT_DIR
+        P.OUTPUT_DIR = self.tmp
+
+    def tearDown(self):
+        self.P.OUTPUT_DIR = self._old_dir
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _path(self, name="x_questions.json"):
+        return os.path.join(self.tmp, name)
+
+    def test_missing_file_returns_empty(self):
+        self.assertEqual(load_all(self._path()), [])
+
+    def test_corrupt_file_is_quarantined_not_destroyed(self):
+        import glob
+        path = self._path()
+        good = [{"topic": 1, "question_num": i, "question": f"q{i}"} for i in range(1, 51)]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(good, f)
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(raw[: len(raw) // 2])  # cat nua -> JSON hong
+
+        data = load_all(path)
+        self.assertEqual(data, [])
+        # File hong phai duoc giu lai duoi dang .corrupt-*
+        quarantined = glob.glob(path + ".corrupt-*")
+        self.assertTrue(quarantined, "file hong phai duoc cach ly")
+        with open(quarantined[0], encoding="utf-8") as f:
+            self.assertGreater(len(f.read()), 0,
+                               "noi dung file hong phai con nguyen de cuu")
+
+    def test_non_list_json_is_quarantined(self):
+        import glob
+        path = self._path()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"not": "a list"}')
+        self.assertEqual(load_all(path), [])
+        self.assertTrue(glob.glob(path + ".corrupt-*"))
+
+    def test_save_progress_is_readable_after_write(self):
+        path = self._path()
+        data = [{"topic": 1, "question_num": 1, "question": "q"}]
+        self.assertTrue(save_progress(data, "x_questions.json"))
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), data)
+
+
 class TestUpsertAndOrder(unittest.TestCase):
     def test_upsert_maintains_sorted_order(self):
         data = []
