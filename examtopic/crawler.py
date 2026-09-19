@@ -1,5 +1,4 @@
 import time
-import json
 import random
 import httpx
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -24,7 +23,6 @@ from .config import (
 )
 from .parser import (
     canonical_exam_code,
-    extract_discussion_info,
     extract_matching_link,
     no_link_result,
 )
