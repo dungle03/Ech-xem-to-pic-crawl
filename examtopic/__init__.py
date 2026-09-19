@@ -57,6 +57,7 @@ from .exporters import (
     _add_picture_fitted,
     _add_question_docx,
     _add_answer_key_table,
+    _set_default_font,
 )
 
 __version__ = "1.1.0"

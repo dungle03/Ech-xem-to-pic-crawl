@@ -56,6 +56,7 @@ from examtopic import (
     _add_picture_fitted,
     _add_question_docx,
     _add_answer_key_table,
+    _set_default_font,
 )
 
 
@@ -112,6 +113,7 @@ __all__ = [
     "_add_picture_fitted",
     "_add_question_docx",
     "_add_answer_key_table",
+    "_set_default_font",
     "parse_args",
     "main",
 ]
@@ -125,6 +127,7 @@ def parse_args():
     parser.add_argument("-p", "--proxy", help="Proxy server URL (vd: http://127.0.0.1:8080 hoac socks5://127.0.0.1:1080)")
     parser.add_argument("-y", "--yes", action="store_true", help="Tu dong convert sang HTML va DOCX sau khi crawl")
     parser.add_argument("--convert-only", help="Duong dan file JSON can convert truc tiep sang HTML va DOCX")
+    parser.add_argument("--hide-answers", action="store_true", help="An dap an trong file DOCX (che do tu luyen, dap an chi con o bang Answer Key)")
     return parser.parse_args()
 
 
@@ -138,7 +141,7 @@ def main():
             return
         try:
             convert_to_html(json_path)
-            convert_to_docx(json_path)
+            convert_to_docx(json_path, hide_answers=args.hide_answers)
         except Exception as e:
             print(f"Loi convert: {e}")
         return
@@ -332,7 +335,7 @@ def main():
             if choice == "y":
                 try:
                     convert_to_html(filepath)
-                    convert_to_docx(filepath)
+                    convert_to_docx(filepath, hide_answers=args.hide_answers)
                 except Exception as e:
                     print(f"  Loi convert: {e}")
     finally:

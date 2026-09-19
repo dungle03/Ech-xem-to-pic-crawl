@@ -3,9 +3,110 @@ import json
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
 from PIL import Image as PILImage
 
 from ..config import _preload_images, _fetch_image
+
+# Bang mau dung chung (dong bo voi HTML: xanh la dam cho dap an dung).
+COLOR_HEADING = RGBColor(0x16, 0x21, 0x3E)   # xanh dam
+COLOR_CORRECT = RGBColor(0x1B, 0x5E, 0x20)   # xanh la dam
+COLOR_MUTED = RGBColor(0x66, 0x66, 0x66)     # xam
+COLOR_NOTE = RGBColor(0x55, 0x55, 0x55)      # xam nhat
+COLOR_ERROR = RGBColor(0xC6, 0x28, 0x28)     # do
+SHADE_CORRECT = "E6F4EA"                     # nen xanh nhat cho dap an dung
+
+DEFAULT_FONT = "Calibri"
+
+
+def _set_default_font(doc, name=DEFAULT_FONT):
+    """Dat font mac dinh cho ca tai lieu de hien thi on dinh moi may.
+
+    Khong dat thi Word tu chon font theo he thong, khien file trong khac nhau
+    tren tung may. Dong thoi set font cho cac style Heading de dong bo.
+    """
+    for style_name in ("Normal", "Heading 1", "Heading 2", "Heading 3"):
+        try:
+            style = doc.styles[style_name]
+        except KeyError:
+            continue
+        style.font.name = name
+        # python-docx khong tu set font cho ky tu CJK/complex script -> set XML.
+        rpr = style.element.get_or_add_rPr()
+        rfonts = rpr.find(qn("w:rFonts"))
+        if rfonts is None:
+            rfonts = OxmlElement("w:rFonts")
+            rpr.append(rfonts)
+        for attr in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
+            rfonts.set(qn(attr), name)
+
+
+def _shade_paragraph(paragraph, fill_hex):
+    """To mau nen cho mot doan van bang XML (python-docx khong co API san)."""
+    p_pr = paragraph._p.get_or_add_pPr()
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), fill_hex)
+    p_pr.append(shd)
+
+
+def _add_page_number_footer(section, exam_label):
+    """Them footer: ten de ben trai, so trang ben phai."""
+    footer = section.footer
+    paragraph = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+    paragraph.text = ""
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    run = paragraph.add_run(f"{exam_label}  -  Trang ")
+    run.font.size = Pt(9)
+    run.font.color.rgb = COLOR_MUTED
+
+    # Truong PAGE tu dong cap nhat so trang khi mo Word.
+    fld_begin = OxmlElement("w:fldChar")
+    fld_begin.set(qn("w:fldCharType"), "begin")
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = "PAGE"
+    fld_end = OxmlElement("w:fldChar")
+    fld_end.set(qn("w:fldCharType"), "end")
+
+    num_run = paragraph.add_run()
+    num_run.font.size = Pt(9)
+    num_run.font.color.rgb = COLOR_MUTED
+    num_run._r.append(fld_begin)
+    num_run._r.append(instr)
+    num_run._r.append(fld_end)
+
+
+def _add_header(section, exam_label):
+    """Them header nho o goc phai voi ten de."""
+    header = section.header
+    paragraph = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+    paragraph.text = ""
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    run = paragraph.add_run(exam_label)
+    run.font.size = Pt(9)
+    run.font.color.rgb = COLOR_MUTED
+    run.italic = True
+
+
+def _add_separator(doc):
+    """Them duong ke ngang phan cach giua cac cau hoi."""
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(6)
+    p.paragraph_format.space_after = Pt(10)
+    p_pr = p._p.get_or_add_pPr()
+    borders = OxmlElement("w:pBdr")
+    bottom = OxmlElement("w:bottom")
+    bottom.set(qn("w:val"), "single")
+    bottom.set(qn("w:sz"), "6")
+    bottom.set(qn("w:space"), "1")
+    bottom.set(qn("w:color"), "D0D0DC")
+    borders.append(bottom)
+    p_pr.append(borders)
+
 
 def _add_picture_fitted(doc, buf, max_width_inches=5.5):
     try:
@@ -24,23 +125,39 @@ def _add_picture_fitted(doc, buf, max_width_inches=5.5):
         except Exception:
             return False
 
-def _add_question_docx(doc, q, num, show_topic=False):
+
+def _add_question_docx(doc, q, num, show_topic=False, hide_answers=False):
+    """Ghi mot cau hoi vao tai lieu Word.
+
+    hide_answers=True se BO QUA khoi dap an de nguoi hoc tu luyen, dap an chi
+    con o bang Answer Key cuoi file.
+    """
     suggested = q.get("suggested_answers") or []
-    answer_str = ", ".join(str(s) for s in suggested) if suggested else "N/A"
-
-    heading_text = f"Cau {num} (Topic {q.get('topic', 1)})" if show_topic else f"Cau {num}"
-    heading = doc.add_heading(heading_text, level=2)
-    for run in heading.runs:
-        run.font.color.rgb = RGBColor(0x16, 0x21, 0x3E)
-        run.font.size = Pt(14)
-
-    answer_p = doc.add_paragraph()
     most_voted = q.get("community_most_voted") or []
-    if most_voted and set(str(s) for s in most_voted) != set(str(s) for s in suggested):
-        answer_str += f" (Cộng đồng: {', '.join(str(s) for s in most_voted)})"
-    answer_run = answer_p.add_run(f"Dap an: {answer_str}")
-    answer_run.bold = True
-    answer_run.font.color.rgb = RGBColor(0x2E, 0x7D, 0x32)
+
+    heading_text = f"Câu {num}"
+    if show_topic and q.get("topic"):
+        heading_text += f"  (Topic {q.get('topic')})"
+    heading = doc.add_heading(heading_text, level=2)
+    heading.paragraph_format.space_before = Pt(10)
+    heading.paragraph_format.space_after = Pt(4)
+    for run in heading.runs:
+        run.font.color.rgb = COLOR_HEADING
+        run.font.size = Pt(13.5)
+        run.bold = True
+
+    if not hide_answers:
+        answer_str = ", ".join(str(s) for s in suggested) if suggested else "N/A"
+        if most_voted and set(str(s) for s in most_voted) != set(str(s) for s in suggested):
+            answer_str += f"  (Cộng đồng: {', '.join(str(s) for s in most_voted)})"
+        answer_p = doc.add_paragraph()
+        answer_p.paragraph_format.space_after = Pt(6)
+        label_run = answer_p.add_run("Đáp án: ")
+        label_run.bold = True
+        label_run.font.color.rgb = COLOR_CORRECT
+        value_run = answer_p.add_run(answer_str)
+        value_run.bold = True
+        value_run.font.color.rgb = COLOR_CORRECT
 
     question_text = str(q.get("question", "") or "")
     p = doc.add_paragraph(question_text)
@@ -67,10 +184,12 @@ def _add_question_docx(doc, q, num, show_topic=False):
         text_run = p.add_run(text)
         if is_correct:
             text_run.bold = True
-            text_run.font.color.rgb = RGBColor(0x2E, 0x7D, 0x32)
+            text_run.font.color.rgb = COLOR_CORRECT
             check = p.add_run("  \u2713")
             check.bold = True
-            check.font.color.rgb = RGBColor(0x2E, 0x7D, 0x32)
+            check.font.color.rgb = COLOR_CORRECT
+            # To nen nhat giup dap an dung noi bat ca khi in mau lan doc man hinh.
+            _shade_paragraph(p, SHADE_CORRECT)
 
         for img_url in (opt.get("images") or []):
             buf = _fetch_image(img_url)
@@ -79,22 +198,25 @@ def _add_question_docx(doc, q, num, show_topic=False):
 
     answers = q.get("answers") or []
     if answers:
-        doc.add_paragraph("Binh luan:", style="List Bullet")
+        doc.add_paragraph("Bình luận:", style="List Bullet")
         for comment in answers[:5]:
             p = doc.add_paragraph(comment[:500])
             p.paragraph_format.left_indent = Inches(0.5)
             p.paragraph_format.space_after = Pt(6)
             for run in p.runs:
                 run.font.size = Pt(9)
-                run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+                run.font.color.rgb = COLOR_NOTE
 
     if q.get("error"):
-        p = doc.add_paragraph(f"[Loi] {q['error']}")
+        p = doc.add_paragraph(f"[Lỗi] {q['error']}")
         for run in p.runs:
-            run.font.color.rgb = RGBColor(0xC6, 0x28, 0x28)
+            run.font.color.rgb = COLOR_ERROR
             run.font.size = Pt(9)
 
-def convert_to_docx(json_path):
+    _add_separator(doc)
+
+
+def convert_to_docx(json_path, hide_answers=False):
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     if not isinstance(data, list):
@@ -109,19 +231,42 @@ def convert_to_docx(json_path):
     _preload_images(questions)
 
     exam_code = questions[0].get("exam_code", "exam")
+    exam_label = str(exam_code).upper()
     doc = Document()
+    _set_default_font(doc)
 
-    title = doc.add_heading(exam_code.upper(), level=1)
+    section = doc.sections[0]
+    _add_header(section, exam_label)
+    _add_page_number_footer(section, exam_label)
+
+    title = doc.add_heading(exam_label, level=1)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    meta = doc.add_paragraph(f"{len(questions)} cau hoi - Topic dump ExamTopics")
+    for run in title.runs:
+        run.font.color.rgb = COLOR_HEADING
+        run.font.size = Pt(24)
+
+    meta = doc.add_paragraph(f"{len(questions)} câu hỏi  -  ExamTopics")
     meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for run in meta.runs:
+        run.font.size = Pt(11)
+        run.font.color.rgb = COLOR_MUTED
+
+    if hide_answers:
+        note = doc.add_paragraph("Chế độ tự luyện: đáp án đã được ẩn, xem bảng tra cứu ở cuối tài liệu.")
+        note.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        for run in note.runs:
+            run.font.size = Pt(10)
+            run.italic = True
+            run.font.color.rgb = COLOR_MUTED
+
     doc.add_page_break()
 
     total_q = len(questions)
     print(f"  Dang tao tai lieu Word ({total_q} cau)...")
     step = max(50, total_q // 10)
     for i, q in enumerate(questions, 1):
-        _add_question_docx(doc, q, q.get("question_num", i), show_topic=show_topic)
+        _add_question_docx(doc, q, q.get("question_num", i),
+                           show_topic=show_topic, hide_answers=hide_answers)
         if i % step == 0 or i == total_q:
             print(f"    Ghi noi dung: {i}/{total_q} cau")
 
@@ -132,6 +277,7 @@ def convert_to_docx(json_path):
     doc.save(out_path)
     print(f"DOCX: {out_path}")
     return out_path
+
 
 def _add_answer_key_table(doc, questions):
     """Them bang phu luc tra cuu dap an nhanh (Answer Key) o cuoi file Word.
@@ -144,18 +290,18 @@ def _add_answer_key_table(doc, questions):
         return
 
     doc.add_page_break()
-    heading = doc.add_heading("BẢNG ĐÁP ÁN TRA CỨU NHANH (ANSWER KEY)", level=1)
+    heading = doc.add_heading("BẢNG ĐÁP ÁN TRA CỨU NHANH", level=1)
     heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
     for run in heading.runs:
-        run.font.color.rgb = RGBColor(0x16, 0x21, 0x3E)
+        run.font.color.rgb = COLOR_HEADING
         run.font.size = Pt(16)
         run.bold = True
 
-    sub = doc.add_paragraph("Bang tong hop dap an goi y toan bo cau hoi")
+    sub = doc.add_paragraph("Bảng tổng hợp đáp án gợi ý toàn bộ câu hỏi")
     sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
     for run in sub.runs:
         run.font.size = Pt(10)
-        run.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+        run.font.color.rgb = COLOR_MUTED
 
     COLS_PER_ROW = 4
     num_q = len(valid_q)
@@ -163,21 +309,23 @@ def _add_answer_key_table(doc, questions):
 
     table = doc.add_table(rows=rows_needed + 1, cols=COLS_PER_ROW * 2)
     table.autofit = False
+    table.style = "Table Grid"
 
     # Header
     hdr_cells = table.rows[0].cells
     for c in range(COLS_PER_ROW):
         idx_q = c * 2
         idx_a = c * 2 + 1
-        hdr_cells[idx_q].text = "Cau"
-        hdr_cells[idx_a].text = "D/A"
+        hdr_cells[idx_q].text = "Câu"
+        hdr_cells[idx_a].text = "ĐA"
         for idx in (idx_q, idx_a):
             p = hdr_cells[idx].paragraphs[0]
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             for r in p.runs:
                 r.bold = True
                 r.font.size = Pt(9)
-                r.font.color.rgb = RGBColor(0x16, 0x21, 0x3E)
+                r.font.color.rgb = COLOR_HEADING
+            _shade_paragraph(p, "EDEEF5")
 
     # Data
     multiple_topics = len(set(x.get("topic", 1) for x in valid_q)) > 1
@@ -211,4 +359,4 @@ def _add_answer_key_table(doc, questions):
         for r in p_a.runs:
             r.bold = True
             r.font.size = Pt(8.5)
-            r.font.color.rgb = RGBColor(0x2E, 0x7D, 0x32)
+            r.font.color.rgb = COLOR_CORRECT

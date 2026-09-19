@@ -10,6 +10,7 @@ from docx import Document
 
 from tool import (
     _add_answer_key_table,
+    _set_default_font,
     _add_picture_fitted,
     _add_question_docx,
     _fetch_image_bytes,
@@ -217,8 +218,8 @@ class TestAnswerKeyTable(unittest.TestCase):
         self.assertEqual(len(doc.tables), 1)
         table = doc.tables[0]
         self.assertEqual(len(table.columns), 8)
-        self.assertEqual(table.rows[0].cells[0].text, "Cau")
-        self.assertEqual(table.rows[0].cells[1].text, "D/A")
+        self.assertEqual(table.rows[0].cells[0].text, "Câu")
+        self.assertEqual(table.rows[0].cells[1].text, "ĐA")
 
 
 class TestBrowserSessionSync(unittest.TestCase):
@@ -384,6 +385,75 @@ class TestHasGoodData(unittest.TestCase):
     def test_absent_question(self):
         data = [{"topic": 1, "question_num": 5, "question": "real"}]
         self.assertFalse(has_good_data(data, 1, 6))
+
+
+class TestDocxFormatting(unittest.TestCase):
+    def _one_question(self):
+        return [{
+            "exam_code": "TEST-1",
+            "topic": 1,
+            "question_num": 1,
+            "question": "What is x?",
+            "options": [
+                {"letter": "A", "text": "alpha", "images": [], "is_correct": True},
+                {"letter": "B", "text": "beta", "images": [], "is_correct": False},
+            ],
+            "suggested_answers": ["A"],
+            "question_images": [],
+        }]
+
+    def _full_text(self, doc):
+        parts = [p.text for p in doc.paragraphs]
+        for t in doc.tables:
+            for row in t.rows:
+                for cell in row.cells:
+                    parts.append(cell.text)
+        for s in doc.sections:
+            for p in list(s.header.paragraphs) + list(s.footer.paragraphs):
+                parts.append(p.text)
+        return "\n".join(parts)
+
+    def test_hide_answers_omits_answer_line(self):
+        doc = Document()
+        _add_question_docx(doc, self._one_question()[0], 1, hide_answers=True)
+        self.assertNotIn("Đáp án:", self._full_text(doc))
+
+    def test_shows_answer_line_by_default(self):
+        doc = Document()
+        _add_question_docx(doc, self._one_question()[0], 1)
+        self.assertIn("Đáp án: A", self._full_text(doc))
+
+    def test_default_font_is_set(self):
+        doc = Document()
+        _set_default_font(doc)
+        # Ap dung cho ca style Heading, khong chi Normal.
+        for style_name in ("Normal", "Heading 1", "Heading 2"):
+            self.assertEqual(
+                doc.styles[style_name].font.name, "Calibri",
+                f"style {style_name} phai dung font Calibri",
+            )
+
+    def test_convert_adds_header_and_footer(self):
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        path = os.path.join(tmp, "t_questions.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self._one_question(), f)
+        out = convert_to_docx(path, hide_answers=True)
+        doc = Document(out)
+        section = doc.sections[0]
+        header_text = "\n".join(p.text for p in section.header.paragraphs)
+        footer_text = "\n".join(p.text for p in section.footer.paragraphs)
+        self.assertIn("TEST-1", header_text)
+        self.assertIn("Trang", footer_text)
+        shutil.rmtree(tmp)
+
+    def test_answer_key_table_keeps_answers_when_hidden(self):
+        doc = Document()
+        _add_answer_key_table(doc, self._one_question())
+        table = doc.tables[0]
+        cell_texts = [c.text for row in table.rows for c in row.cells]
+        self.assertIn("A", cell_texts)
 
 
 if __name__ == "__main__":
