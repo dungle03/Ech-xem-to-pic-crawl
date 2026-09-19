@@ -38,8 +38,16 @@ def set_proxy(proxy_url):
     global _PROXY
     _PROXY = proxy_url.strip() if proxy_url and isinstance(proxy_url, str) else None
 
-# Giu lai <script type="application/json"> chua voted-answers-tally
-_RE_SCRIPT = re.compile(r'<script\b(?![^>]*\btype=[\x22\x27]application/json[\x22\x27])[^>]*>.*?</script>|<script\b(?![^>]*\btype=[\x22\x27]application/json[\x22\x27])[^>]*/>', re.S | re.I)
+# Giu lai <script type="application/json"> chua voted-answers-tally.
+# Cho phep khoang trang quanh dau '=' va quanh gia tri (vd: type = "application/json")
+# vi HTML hop le van dung duoc bien the nay; neu khong, tally (nguon du lieu
+# community_most_voted) se bi xoa am tham ma khong bao loi.
+_RE_SCRIPT = re.compile(
+    r'<script\b(?![^>]*\btype\s*=\s*[\x22\x27]\s*application/json\s*[\x22\x27])[^>]*>.*?</script>'
+    r'|'
+    r'<script\b(?![^>]*\btype\s*=\s*[\x22\x27]\s*application/json\s*[\x22\x27])[^>]*/>',
+    re.S | re.I,
+)
 _RE_IFRAME = re.compile(r'<iframe\b[^>]*>.*?</iframe>', re.S | re.I)
 _RE_EXAMTOPICS_URL = re.compile(r'https?://(?:www\.)?examtopics\.com/[^\s&"\'<>]+', re.I)
 _RE_DISCUSSION_SLUG = re.compile(

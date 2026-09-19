@@ -307,6 +307,49 @@ class TestProxyConfiguration(unittest.TestCase):
         set_proxy(None)
 
 
+class TestScriptTagPreservation(unittest.TestCase):
+    """_RE_SCRIPT phai GIU lai <script type="application/json"> (nguon du lieu
+    community_most_voted) va STRIP cac script khac. Bien the co khoang trang
+    quanh dau '=' tung bi xoa am tham -> mat du lieu vote ma khong bao loi.
+    """
+
+    def setUp(self):
+        from examtopic.config import _RE_SCRIPT
+        self.strip = _RE_SCRIPT.sub
+
+    def _kept(self, html):
+        return bool(self.strip('', html).strip())
+
+    def test_keeps_canonical_json_script(self):
+        self.assertTrue(self._kept('<script type="application/json">[1]</script>'))
+
+    def test_keeps_json_script_with_space_around_equals(self):
+        for html in (
+            '<script type = "application/json">[1]</script>',
+            '<script type= "application/json">[1]</script>',
+            '<script type ="application/json" id="x">[1]</script>',
+            "<script type = 'application/json'>[1]</script>",
+        ):
+            self.assertTrue(self._kept(html), f"bi strip nham: {html}")
+
+    def test_keeps_real_examtopics_tally_markup(self):
+        html = ('<div class="voted-answers-tally d-none">'
+                '<script id="806123" type="application/json">'
+                '[{"voted_answers": "D", "vote_count": 12, "is_most_voted": true}]'
+                '</script></div>')
+        out = self.strip('', html)
+        self.assertIn("voted_answers", out)
+        self.assertIn("is_most_voted", out)
+
+    def test_strips_ordinary_scripts(self):
+        for html in (
+            '<script type="text/javascript">var x=1;</script>',
+            '<script>var y=2;</script>',
+            '<script src="https://ads.example/a.js"></script>',
+        ):
+            self.assertFalse(self._kept(html), f"khong strip: {html}")
+
+
 class TestAsInt(unittest.TestCase):
     def test_int_passthrough(self):
         self.assertEqual(as_int(5), 5)
