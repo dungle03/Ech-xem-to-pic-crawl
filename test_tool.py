@@ -44,6 +44,7 @@ from tool import (
     upsert,
     unwrap_search_href,
     as_int,
+    record_error,
 )
 
 
@@ -487,6 +488,18 @@ class TestHasGoodData(unittest.TestCase):
     def test_absent_question(self):
         data = [{"topic": 1, "question_num": 5, "question": "real"}]
         self.assertFalse(has_good_data(data, 1, 6))
+
+
+class TestRecordError(unittest.TestCase):
+    """Ban ghi loi phai duoc tach rieng, khong tron vao file du lieu chinh."""
+
+    def test_appends_to_error_list(self):
+        errors = []
+        record_error({"exam_code": "x", "topic": 1, "question_num": 2, "error": "boom"}, errors)
+        record_error({"exam_code": "x", "topic": 1, "question_num": 9, "error": "nope"}, errors)
+        self.assertEqual(len(errors), 2)
+        self.assertEqual(errors[0]["question_num"], 2)
+        self.assertNotIn("question", errors[0])
 
 
 class TestConvertMalformedData(unittest.TestCase):

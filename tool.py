@@ -115,8 +115,18 @@ __all__ = [
     "_add_answer_key_table",
     "_set_default_font",
     "parse_args",
+    "record_error",
     "main",
 ]
+
+def record_error(record, errors):
+    """Them mot ban ghi loi vao danh sach loi (ghi ra file .errors.json rieng).
+
+    Tach khoi file du lieu chinh de so record trong file khop voi so cau convert
+    duoc, tranh nguoi dung tuong bi mat cau.
+    """
+    errors.append(record)
+
 
 def parse_args():
     import argparse
@@ -189,6 +199,8 @@ def main():
 
     filename = f"{clean_code}_questions.json"
     filepath = os.path.join(OUTPUT_DIR, filename)
+    error_filename = f"{clean_code}_errors.json"
+    error_records = []
 
     all_data = load_all(filepath)
     for rec in all_data:
@@ -285,19 +297,17 @@ def main():
                     # chuoi, neu so sanh == truc tiep se coi la khac cau va record
                     # loi se ghi de mat cau hoi tot. Xem parser.has_good_data.
                     if not has_good_data(all_data, topic, qnum):
-                        print(f"  KHONG LAY DUOC cau {qnum} -> ghi chu vao file va bo qua")
-                        upsert(all_data, {
+                        # Ghi ban ghi loi ra FILE RIENG (.errors.json), khong tron
+                        # vao file du lieu chinh. Neu tron vao, file chinh co N
+                        # record nhung convert chi ra it hon -> nguoi dung tuong mat
+                        # cau. Ban ghi loi chi de ghi nhan, khong chan crawl lai.
+                        print(f"  KHONG LAY DUOC cau {qnum} -> ghi vao {error_filename} va bo qua")
+                        record_error({
                             "exam_code": search_code,
                             "topic": topic,
                             "question_num": qnum,
-                            "question": "",
-                            "question_images": [],
-                            "options": [],
-                            "suggested_answers": [],
-                            "answers": [],
-                            "url": "",
-                            "error": error_msg
-                        })
+                            "error": error_msg,
+                        }, error_records)
                     else:
                         print(f"  Khong lay duoc cau {qnum} nhung giu du lieu tot tu lan truoc.")
                 save_progress(all_data, filename)
@@ -326,6 +336,9 @@ def main():
         if failed_missing:
             print(f"  Vi thuc su khong co discussion: {', '.join(map(str, failed_missing))}")
         print(f"Ket qua: output/{filename}")
+        if error_records:
+            save_progress(error_records, error_filename)
+            print(f"Cau loi ({len(error_records)}) luu rieng tai output/{error_filename}")
         print("="*60)
 
         if all_data:
