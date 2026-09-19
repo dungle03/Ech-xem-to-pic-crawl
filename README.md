@@ -89,6 +89,12 @@ python3 tool.py -e az-104 -t 1 -r 1-100 -p http://127.0.0.1:8080 -y
 
 # Chỉ convert file JSON đã có sang HTML + DOCX (không cần mở browser)
 python3 tool.py --convert-only output/sk0005_questions.json
+
+# Chạy ẩn cửa sổ trình duyệt (dùng trên server/CI không có màn hình)
+python3 tool.py -e az-104 -t 1 -r 1-50 --headless -y
+
+# Ẩn đáp án trong file DOCX để tự luyện (đáp án chỉ còn ở bảng Answer Key)
+python3 tool.py --convert-only output/sk0005_questions.json --hide-answers
 ```
 
 ## Cách hoạt động

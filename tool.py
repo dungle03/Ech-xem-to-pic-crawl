@@ -128,6 +128,7 @@ def parse_args():
     parser.add_argument("-y", "--yes", action="store_true", help="Tu dong convert sang HTML va DOCX sau khi crawl")
     parser.add_argument("--convert-only", help="Duong dan file JSON can convert truc tiep sang HTML va DOCX")
     parser.add_argument("--hide-answers", action="store_true", help="An dap an trong file DOCX (che do tu luyen, dap an chi con o bang Answer Key)")
+    parser.add_argument("--headless", action="store_true", help="Chay browser an (khong hien cua so). Dung tren server/CI khong co man hinh; mac dinh la hien de giam CAPTCHA khi search.")
     return parser.parse_args()
 
 
@@ -208,7 +209,7 @@ def main():
     print("Khoi dong CloakBrowser...")
     fp_seed = random.randint(10000, 99999)
     browser = launch(
-        headless=False,
+        headless=args.headless,
         humanize=True,
         stealth_args=False,
         proxy=args.proxy.strip() if args.proxy else None,
