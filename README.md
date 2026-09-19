@@ -30,7 +30,7 @@ Tự động thu thập câu hỏi từ ExamTopics, lưu kết quả dưới d�
 * Python 3.9+
 * Kết nối Internet
 * Linux/macOS hoặc Windows (WSL2 khuyến nghị)
-* Màn hình hiển thị (tool chạy trình duyệt ở chế độ headed)
+* Màn hình hiển thị (khuyến nghị): mặc định tool chạy trình duyệt ở chế độ headed để giảm CAPTCHA. Trên server/CI không có màn hình, dùng thêm `--headless`.
 
 ## Cài đặt
 
@@ -146,7 +146,7 @@ Ghi chú:
   * `crawler.py`: Điều phối tìm kiếm, nạp discussion, đồng bộ session và bóc dữ liệu.
   * `exporters/`: Dựng HTML ôn tập/thi thử (`html.py`) và Word kèm Answer Key (`docx.py`).
 * `tool.py`: CLI entrypoint điều phối chính, re-export 100% tương thích ngược.
-* `test_tool.py`: Bộ 32 unit tests tự động kiểm thử toàn bộ luồng xử lý.
+* `test_tool.py`: Bộ 65 unit tests tự động kiểm thử toàn bộ luồng xử lý.
 
 ### Kiểm thử
 
@@ -163,6 +163,7 @@ python3 -m unittest test_tool.py
 | `{exam}_questions.json` | Dữ liệu gốc |
 | `{exam}_questions.html` | Trang ôn tập tự chứa (ảnh base64), đáp án che mặc định, có tìm kiếm/đánh dấu câu cần ôn và chế độ thi thử |
 | `{exam}_questions.docx` | Mở bằng Word/LibreOffice, đáp án in đậm xanh + dấu ✓, ảnh nhúng sẵn, kèm bảng tra đáp án nhanh (Answer Key) ở cuối tài liệu |
+| `{exam}_errors.json` | Danh sách câu không lấy được (tách riêng để số record file chính khớp số câu convert được). Được **nạp lại và merge** khi chạy tiếp, không bị ghi đè mất |
 
 ## Cấu hình
 

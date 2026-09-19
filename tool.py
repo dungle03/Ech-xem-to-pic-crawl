@@ -1,4 +1,5 @@
 import os
+import sys
 import random
 import time
 from cloakbrowser import launch
@@ -123,7 +124,9 @@ def record_error(record, errors):
     """Them mot ban ghi loi vao danh sach loi (ghi ra file .errors.json rieng).
 
     Tach khoi file du lieu chinh de so record trong file khop voi so cau convert
-    duoc, tranh nguoi dung tuong bi mat cau.
+    duoc, tranh nguoi dung tuong bi mat cau. Giu lai ham nay (du `main()` nay
+    dung `upsert` truc tiep de merge thay vi append) de khong pha vo API cong
+    khai `tool.record_error`.
     """
     errors.append(record)
 
@@ -149,12 +152,14 @@ def main():
         json_path = args.convert_only
         if not os.path.exists(json_path):
             print(f"Loi: Khong tim thay file {json_path}")
-            return
+            sys.exit(1)
         try:
             convert_to_html(json_path)
             convert_to_docx(json_path, hide_answers=args.hide_answers)
         except Exception as e:
+            # Tra ve ma loi khac 0 de script/CI khong tuong nham la thanh cong.
             print(f"Loi convert: {e}")
+            sys.exit(2)
         return
 
     print("="*60)
@@ -200,7 +205,14 @@ def main():
     filename = f"{clean_code}_questions.json"
     filepath = os.path.join(OUTPUT_DIR, filename)
     error_filename = f"{clean_code}_errors.json"
-    error_records = []
+    error_path = os.path.join(OUTPUT_DIR, error_filename)
+
+    # Nap lai ban ghi loi cu truoc khi ghi tiep. Neu khong, moi lan chay lai se
+    # GHI DE file .errors.json va lam mat am tham danh sach cau loi cua cac lan
+    # truoc (nguoc lai voi file du lieu chinh da duoc bao toan).
+    error_records = load_all(error_path)
+    if error_records:
+        print(f"  Nap san {len(error_records)} ban ghi loi tu output/{error_filename}.")
 
     all_data = load_all(filepath)
     for rec in all_data:
@@ -302,12 +314,15 @@ def main():
                         # record nhung convert chi ra it hon -> nguoi dung tuong mat
                         # cau. Ban ghi loi chi de ghi nhan, khong chan crawl lai.
                         print(f"  KHONG LAY DUOC cau {qnum} -> ghi vao {error_filename} va bo qua")
-                        record_error({
+                        # Dung upsert (khong phai append) de neu cau nay da co ban
+                        # ghi loi tu lan chay truoc thi cap nhat tai cho, tranh
+                        # trung lap khi chay lai nhieu lan.
+                        upsert(error_records, {
                             "exam_code": search_code,
                             "topic": topic,
                             "question_num": qnum,
                             "error": error_msg,
-                        }, error_records)
+                        })
                     else:
                         print(f"  Khong lay duoc cau {qnum} nhung giu du lieu tot tu lan truoc.")
                 save_progress(all_data, filename)

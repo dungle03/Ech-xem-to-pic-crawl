@@ -18,7 +18,6 @@ from tool import (
     _IMG_HEADERS,
     _SESSION_COOKIES,
     _HARVESTED_LINKS,
-    _PROXY,
     set_proxy,
     extract_discussion_info,
     find_discussion_link,
@@ -360,11 +359,45 @@ class TestHarvestedLinksCache(unittest.TestCase):
 class TestProxyConfiguration(unittest.TestCase):
     def test_set_proxy(self):
         set_proxy("http://127.0.0.1:8888")
-        from tool import _PROXY
-        # Check through getter or import
         from examtopic.config import _PROXY as conf_proxy
         self.assertEqual(conf_proxy, "http://127.0.0.1:8888")
         set_proxy(None)
+
+    def test_http_fallback_sees_proxy_set_after_import(self):
+        """Regression: crawler tung `from .config import _PROXY` (copy gia tri
+        luc import) nen set_proxy() sau do khong den duoc HTTP fallback -> am
+        tham bo qua proxy, lo IP that.
+
+        Test nay kiem tra HANH VI quan sat duoc: gia tri `proxy=` thuc su truyen
+        vao httpx.get() cua load_discussion_via_http, chu khong chi doc thuoc
+        tinh noi bo.
+        """
+        from examtopic.crawler import load_discussion_via_http
+        set_proxy("http://127.0.0.1:7777")
+        try:
+            tab = MagicMock()
+            tab.query_selector.return_value = MagicMock()
+            resp = MagicMock(status_code=200, text="<div class='discussion-header-container'></div>")
+            with patch("examtopic.crawler.httpx.get", return_value=resp) as mock_get:
+                load_discussion_via_http(tab, "https://x.test")
+            self.assertEqual(mock_get.call_count, 1)
+            self.assertEqual(
+                mock_get.call_args.kwargs.get("proxy"), "http://127.0.0.1:7777",
+                "HTTP fallback phai truyen proxy da set vao httpx.get",
+            )
+        finally:
+            set_proxy(None)
+
+    def test_http_fallback_has_no_proxy_by_default(self):
+        """Mac dinh khong set proxy thi httpx.get phai nhan proxy=None."""
+        from examtopic.crawler import load_discussion_via_http
+        set_proxy(None)
+        tab = MagicMock()
+        tab.query_selector.return_value = MagicMock()
+        resp = MagicMock(status_code=200, text="<div class='discussion-header-container'></div>")
+        with patch("examtopic.crawler.httpx.get", return_value=resp) as mock_get:
+            load_discussion_via_http(tab, "https://x.test")
+        self.assertIsNone(mock_get.call_args.kwargs.get("proxy"))
 
 
 class TestScriptTagPreservation(unittest.TestCase):
@@ -500,6 +533,106 @@ class TestRecordError(unittest.TestCase):
         self.assertEqual(len(errors), 2)
         self.assertEqual(errors[0]["question_num"], 2)
         self.assertNotIn("question", errors[0])
+
+
+class TestErrorFileResumeMerge(unittest.TestCase):
+    """Lan chay lai phai GIU lai ban ghi loi cu thay vi ghi de .errors.json.
+
+    Truoc day tool.py khoi tao `error_records = []` moi lan chay -> file
+    .errors.json bi ghi de, mat am tham danh sach cau loi cua lan truoc. Nay
+    phai nap lai va merge (upsert) theo (topic, question_num).
+    """
+
+    def setUp(self):
+        import examtopic.parser as P
+        self.P = P
+        self.tmp = tempfile.mkdtemp()
+        self._old_dir = P.OUTPUT_DIR
+        P.OUTPUT_DIR = self.tmp
+
+    def tearDown(self):
+        self.P.OUTPUT_DIR = self._old_dir
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _path(self):
+        return os.path.join(self.tmp, "x_errors.json")
+
+    def test_second_run_keeps_first_run_errors(self):
+        # Lan 1: cau 1 loi.
+        recs = load_all(self._path())
+        upsert(recs, {"exam_code": "x", "topic": 1, "question_num": 1, "error": "boom"})
+        save_progress(recs, "x_errors.json")
+
+        # Lan 2: nap lai roi them cau 2 loi.
+        recs = load_all(self._path())
+        self.assertEqual(len(recs), 1, "phai nap lai duoc ban ghi loi cu")
+        upsert(recs, {"exam_code": "x", "topic": 1, "question_num": 2, "error": "nope"})
+        save_progress(recs, "x_errors.json")
+
+        with open(self._path(), encoding="utf-8") as f:
+            final = json.load(f)
+        self.assertEqual(len(final), 2, "khong duoc mat ban ghi loi cu")
+        self.assertEqual([r["question_num"] for r in final], [1, 2])
+
+    def test_recrawled_failure_updates_in_place(self):
+        recs = [{"exam_code": "x", "topic": 1, "question_num": 1, "error": "old"}]
+        save_progress(recs, "x_errors.json")
+
+        recs = load_all(self._path())
+        upsert(recs, {"exam_code": "x", "topic": 1, "question_num": 1, "error": "new"})
+        save_progress(recs, "x_errors.json")
+
+        with open(self._path(), encoding="utf-8") as f:
+            final = json.load(f)
+        self.assertEqual(len(final), 1, "cung cau thi cap nhat tai cho, khong nhan doi")
+        self.assertEqual(final[0]["error"], "new")
+
+
+class TestConvertOnlyExitCode(unittest.TestCase):
+    """--convert-only phai tra ma loi khac 0 khi that bai, de script/CI khong
+    tuong nham la thanh cong. Truoc day luon return ma 0.
+
+    Chay trong tien trinh con de bat SystemExit ma khong lam chet test runner.
+    """
+
+    def _run(self, args):
+        import subprocess
+        import sys as _sys
+        return subprocess.run(
+            [_sys.executable, "tool.py", *args],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            capture_output=True,
+            text=True,
+        )
+
+    def test_missing_file_exits_nonzero(self):
+        proc = self._run(["--convert-only", "/nonexistent/definitely-missing.json"])
+        self.assertNotEqual(proc.returncode, 0, "file thieu phai tra ma loi")
+
+    def test_no_valid_questions_exits_nonzero(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp, "x_questions.json")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write('[{"exam_code": "X", "topic": 1, "question_num": 1, "question": ""}]')
+            proc = self._run(["--convert-only", path])
+            self.assertNotEqual(proc.returncode, 0, "convert that bai phai tra ma loi")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_valid_file_exits_zero(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp, "x_questions.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump([{
+                    "exam_code": "X", "topic": 1, "question_num": 1, "question": "q",
+                    "options": [], "suggested_answers": [], "answers": [],
+                }], f)
+            proc = self._run(["--convert-only", path])
+            self.assertEqual(proc.returncode, 0, f"convert thanh cong phai la 0: {proc.stderr}")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 class TestConvertMalformedData(unittest.TestCase):
