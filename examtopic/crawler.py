@@ -3,6 +3,7 @@ import random
 import httpx
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+from . import config
 from .config import (
     DEFAULT_OP_TIMEOUT,
     RETRY_HTTP_ATTEMPTS,
@@ -19,7 +20,6 @@ from .config import (
     _IMG_HEADERS,
     _SESSION_COOKIES,
     _HARVESTED_LINKS,
-    _PROXY,
     _RE_SCRIPT,
     _RE_IFRAME,
 )
@@ -35,7 +35,10 @@ def sync_browser_session(page):
     Dam bao cac request tai anh va HTTP fallback dung chung dung 1 fingerprint
     va cookie Cloudflare session voi CloakBrowser. Tra ve True neu lay thanh cong.
     """
-    global _IMG_HEADERS, _SESSION_COOKIES
+    # Khong can `global` o day: ta chi MUTATE hai dict nay tai cho
+    # (`_IMG_HEADERS[...] = ...`, `_SESSION_COOKIES.clear()/update()`), khong
+    # bao gio gan lai ten. Vi dict la mutable va duoc share theo reference giua
+    # cac module, thay doi se duoc nhin thay o moi noi.
     if not page:
         return False
     synced = False
@@ -273,6 +276,10 @@ def load_discussion_via_http(tab, href, timeout=20):
     """
     ua = _IMG_HEADERS.get("User-Agent") or ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
     cookies = _SESSION_COOKIES or None
+    # Doc `config._PROXY` tai thoi diem goi, KHONG import truc tiep: `from .config
+    # import _PROXY` chi copy gia tri luc import, nen set_proxy() sau do se khong
+    # bao gio den duoc day -> HTTP fallback am tham bo qua proxy, lo IP that.
+    proxy = config._PROXY
     # Cloudflare doi khi tra 429/503 (rate-limit/challenge) trong giay lat. Thu lai
     # toi da 2 lan voi backoff 1s -> 2s (tong cho toi da 3s) de cuu nhung lan chan
     # ngan han, thay vi that bai ngay va rot xuong browser cham hon.
@@ -280,7 +287,7 @@ def load_discussion_via_http(tab, href, timeout=20):
     html_text = None
     for attempt in range(RETRY_HTTP_ATTEMPTS + 1):
         try:
-            resp = httpx.get(href, headers={"User-Agent": ua}, cookies=cookies, proxy=_PROXY, timeout=timeout,
+            resp = httpx.get(href, headers={"User-Agent": ua}, cookies=cookies, proxy=proxy, timeout=timeout,
                              follow_redirects=True)
         except httpx.RequestError as e:
             print(f"    Loi ket noi HTTP fallback: {e}")
