@@ -10,6 +10,11 @@ MIN_DELAY = 2
 MAX_DELAY = 5
 RETRY_LIMIT = 3
 BLOCKED_ABORT_STREAK = 3
+
+# Retry tai discussion bang HTTP khi Cloudflare tra 429/503 giua phien.
+RETRY_HTTP_ATTEMPTS = 2
+RETRY_HTTP_BACKOFF = 1.0
+
 OUTPUT_DIR = "output"
 _IMG_CACHE_DIR = os.path.join(OUTPUT_DIR, ".imgcache")
 

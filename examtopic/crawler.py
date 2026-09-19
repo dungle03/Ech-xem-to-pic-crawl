@@ -5,6 +5,8 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from .config import (
     DEFAULT_OP_TIMEOUT,
+    RETRY_HTTP_ATTEMPTS,
+    RETRY_HTTP_BACKOFF,
     SEARCH_ENGINES,
     SEARCH_OK,
     SEARCH_EMPTY,
@@ -271,18 +273,33 @@ def load_discussion_via_http(tab, href, timeout=20):
     """
     ua = _IMG_HEADERS.get("User-Agent") or ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
     cookies = _SESSION_COOKIES or None
-    try:
-        resp = httpx.get(href, headers={"User-Agent": ua}, cookies=cookies, proxy=_PROXY, timeout=timeout,
-                         follow_redirects=True)
-        if resp.status_code != 200 or not resp.text:
-            print(f"    HTTP fallback tra ve ma HTTP {resp.status_code}")
+    # Cloudflare doi khi tra 429/503 (rate-limit/challenge) trong giay lat. Thu lai
+    # toi da 2 lan voi backoff 1s -> 2s (tong cho toi da 3s) de cuu nhung lan chan
+    # ngan han, thay vi that bai ngay va rot xuong browser cham hon.
+    retry_statuses = (429, 503)
+    html_text = None
+    for attempt in range(RETRY_HTTP_ATTEMPTS + 1):
+        try:
+            resp = httpx.get(href, headers={"User-Agent": ua}, cookies=cookies, proxy=_PROXY, timeout=timeout,
+                             follow_redirects=True)
+        except httpx.RequestError as e:
+            print(f"    Loi ket noi HTTP fallback: {e}")
             return False
-        html_text = resp.text
-    except httpx.RequestError as e:
-        print(f"    Loi ket noi HTTP fallback: {e}")
+        except Exception as e:
+            print(f"    Loi ngoai le HTTP fallback: {e}")
+            return False
+        if resp.status_code == 200 and resp.text:
+            html_text = resp.text
+            break
+        if resp.status_code in retry_statuses and attempt < RETRY_HTTP_ATTEMPTS:
+            wait = RETRY_HTTP_BACKOFF * (2 ** attempt)
+            print(f"    HTTP {resp.status_code} - thu lai sau {wait:.0f}s "
+                  f"(lan {attempt + 1}/{RETRY_HTTP_ATTEMPTS})...")
+            time.sleep(wait)
+            continue
+        print(f"    HTTP fallback tra ve ma HTTP {resp.status_code}")
         return False
-    except Exception as e:
-        print(f"    Loi ngoai le HTTP fallback: {e}")
+    if html_text is None:
         return False
     # Xoa script/iframe: chung khien trinh duyet co gang tai/thuc thi
     # tracker+ads, trong khi noi dung can boc la HTML tinh render san.

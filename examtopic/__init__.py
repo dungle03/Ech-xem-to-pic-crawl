@@ -23,6 +23,7 @@ from .config import (
 )
 from .parser import (
     escape_html,
+    as_int,
     canonical_exam_code,
     normalize_exam_code,
     extract_discussion_info,
@@ -33,6 +34,7 @@ from .parser import (
     no_link_result,
     parse_range,
     load_all,
+    has_good_data,
     upsert,
     save_progress,
 )

@@ -18,6 +18,18 @@ from .config import (
 def escape_html(text):
     return html.escape(str(text or ""), quote=True)
 
+def as_int(value, default=0):
+    """Ep ve int an toan, chiu duoc chuoi so, None va gia tri rac.
+
+    Dung de so sanh key (topic, question_num) giua cac nguon du lieu co the
+    luu kieu khac nhau (int hoac str), tranh coi hai ban ghi cung cau la khac
+    nhau roi ghi de mat du lieu tot.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
 def canonical_exam_code(code):
     return re.sub(r'[^a-z0-9]', '', (code or '').lower())
 
@@ -176,17 +188,33 @@ def load_all(filepath):
         return []
     return data
 
+def has_good_data(all_data, topic, qnum):
+    """Kiem tra da co cau hoi tot (co noi dung) cho (topic, qnum) chua.
+
+    Dung truoc khi ghi ban ghi loi de tranh ghi de mat cau hoi tot da crawl
+    duoc tu lan truoc. So sanh key bang as_int nen chiu duoc ca du lieu cu
+    luu topic/question_num dang chuoi.
+    """
+    key = (as_int(topic, 1) or 1, as_int(qnum, 0))
+    return any(_record_key(rec) == key and rec.get("question") for rec in all_data)
+
+def _record_key(rec):
+    """Khoa sap xep (topic, question_num) an toan voi moi kieu du lieu."""
+    if not isinstance(rec, dict):
+        return (0, 0)
+    return (as_int(rec.get("topic"), 1) or 1, as_int(rec.get("question_num"), 0))
+
 def upsert(all_data, record):
     if not isinstance(record, dict):
         return
-    key = (int(record.get("topic") or 1), int(record.get("question_num") or 0))
+    key = _record_key(record)
     for i, rec in enumerate(all_data):
-        if isinstance(rec, dict) and (int(rec.get("topic") or 1), int(rec.get("question_num") or 0)) == key:
+        if _record_key(rec) == key:
             all_data[i] = record
-            all_data.sort(key=lambda r: (int(r.get("topic") or 1), int(r.get("question_num") or 0)) if isinstance(r, dict) else (0, 0))
+            all_data.sort(key=_record_key)
             return
     all_data.append(record)
-    all_data.sort(key=lambda r: (int(r.get("topic") or 1), int(r.get("question_num") or 0)) if isinstance(r, dict) else (0, 0))
+    all_data.sort(key=_record_key)
 
 def save_progress(data, filename):
     os.makedirs(OUTPUT_DIR, exist_ok=True)

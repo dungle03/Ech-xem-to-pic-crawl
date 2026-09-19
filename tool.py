@@ -1,7 +1,6 @@
 import os
 import random
 import time
-import httpx
 from cloakbrowser import launch
 
 from examtopic import (
@@ -27,6 +26,7 @@ from examtopic import (
     _fetch_image,
     _preload_images,
     escape_html,
+    as_int,
     canonical_exam_code,
     normalize_exam_code,
     extract_discussion_info,
@@ -37,6 +37,7 @@ from examtopic import (
     no_link_result,
     parse_range,
     load_all,
+    has_good_data,
     upsert,
     save_progress,
     safe_close,
@@ -92,6 +93,8 @@ __all__ = [
     "parse_range",
     "load_all",
     "upsert",
+    "as_int",
+    "has_good_data",
     "save_progress",
     "safe_close",
     "safe_goto",
@@ -274,14 +277,10 @@ def main():
                     elif result is NO_DISCUSSION_MISSING:
                         failed_missing.append(qnum)
                     error_msg = no_link_reason or "Khong lay duoc cau hoi"
-                    has_good_data = any(
-                        isinstance(rec, dict)
-                        and rec.get("topic") == topic
-                        and rec.get("question_num") == qnum
-                        and rec.get("question")
-                        for rec in all_data
-                    )
-                    if not has_good_data:
+                    # So sanh key bang as_int: du lieu cu co the luu topic dang
+                    # chuoi, neu so sanh == truc tiep se coi la khac cau va record
+                    # loi se ghi de mat cau hoi tot. Xem parser.has_good_data.
+                    if not has_good_data(all_data, topic, qnum):
                         print(f"  KHONG LAY DUOC cau {qnum} -> ghi chu vao file va bo qua")
                         upsert(all_data, {
                             "exam_code": search_code,

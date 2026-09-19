@@ -28,6 +28,7 @@ from tool import (
     is_examtopics_discussion_url,
     link_matches_question,
     load_all,
+    has_good_data,
     no_link_result,
     NO_DISCUSSION_BLOCKED,
     NO_DISCUSSION_MISSING,
@@ -41,6 +42,7 @@ from tool import (
     sync_browser_session,
     upsert,
     unwrap_search_href,
+    as_int,
 )
 
 
@@ -144,16 +146,17 @@ class TestNegativeImageCache(unittest.TestCase):
     def test_failed_image_sets_negative_cache(self):
         url = "https://invalid-non-existent-domain-test.com/fake.png"
         _IMG_CACHE.clear()
-        with patch("tool.httpx.get", side_effect=Exception("Network failure")):
+        with patch("examtopic.config.httpx.get", side_effect=Exception("Network failure")) as mock_get:
             res = _fetch_image_bytes(url)
             self.assertIsNone(res)
             self.assertIn(url, _IMG_CACHE)
             self.assertIsNone(_IMG_CACHE[url])
+            self.assertEqual(mock_get.call_count, 1)
 
-            with patch("tool.httpx.get") as mock_get:
+            with patch("examtopic.config.httpx.get") as mock_get2:
                 res2 = _fetch_image_bytes(url)
                 self.assertIsNone(res2)
-                mock_get.assert_not_called()
+                mock_get2.assert_not_called()
 
 
 class TestBuildHtml(unittest.TestCase):
@@ -301,6 +304,86 @@ class TestProxyConfiguration(unittest.TestCase):
         from examtopic.config import _PROXY as conf_proxy
         self.assertEqual(conf_proxy, "http://127.0.0.1:8888")
         set_proxy(None)
+
+
+class TestAsInt(unittest.TestCase):
+    def test_int_passthrough(self):
+        self.assertEqual(as_int(5), 5)
+        self.assertEqual(as_int("7"), 7)
+
+    def test_invalid_returns_default(self):
+        self.assertEqual(as_int(None), 0)
+        self.assertEqual(as_int("abc"), 0)
+        self.assertEqual(as_int("abc", default=1), 1)
+        self.assertEqual(as_int("", default=9), 9)
+
+
+class TestUpsertRobustKeys(unittest.TestCase):
+    def test_upsert_does_not_crash_on_garbage_topic(self):
+        data = [{"topic": "abc", "question_num": 1, "question": "x"}]
+        upsert(data, {"topic": 1, "question_num": 2, "question": "y"})
+        self.assertEqual(len(data), 2)
+
+    def test_upsert_matches_str_and_int_keys(self):
+        data = [{"topic": "1", "question_num": "5", "question": "old"}]
+        upsert(data, {"topic": 1, "question_num": 5, "question": "new"})
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["question"], "new")
+
+
+class TestHttpRetryBackoff(unittest.TestCase):
+    def test_retries_on_429_then_succeeds(self):
+        from examtopic.crawler import load_discussion_via_http
+        responses = [
+            MagicMock(status_code=429, text="rate limited"),
+            MagicMock(status_code=200, text="<div class='discussion-header-container'></div>"),
+        ]
+        tab = MagicMock()
+        tab.query_selector.return_value = MagicMock()
+        with patch("examtopic.crawler.httpx.get", side_effect=responses) as mock_get, \
+             patch("examtopic.crawler.time.sleep") as mock_sleep:
+            ok = load_discussion_via_http(tab, "https://x.test")
+        self.assertTrue(ok)
+        self.assertEqual(mock_get.call_count, 2)
+        mock_sleep.assert_called_once_with(1.0)
+
+    def test_gives_up_after_exhausting_retries(self):
+        from examtopic.crawler import load_discussion_via_http
+        responses = [MagicMock(status_code=503, text="")] * 3
+        tab = MagicMock()
+        with patch("examtopic.crawler.httpx.get", side_effect=responses), \
+             patch("examtopic.crawler.time.sleep"):
+            ok = load_discussion_via_http(tab, "https://x.test")
+        self.assertFalse(ok)
+
+    def test_non_retryable_status_fails_immediately(self):
+        from examtopic.crawler import load_discussion_via_http
+        tab = MagicMock()
+        with patch("examtopic.crawler.httpx.get",
+                   return_value=MagicMock(status_code=404, text="nope")) as mock_get, \
+             patch("examtopic.crawler.time.sleep") as mock_sleep:
+            ok = load_discussion_via_http(tab, "https://x.test")
+        self.assertFalse(ok)
+        self.assertEqual(mock_get.call_count, 1)
+        mock_sleep.assert_not_called()
+
+
+class TestHasGoodData(unittest.TestCase):
+    def test_detects_good_record(self):
+        data = [{"topic": 1, "question_num": 5, "question": "real"}]
+        self.assertTrue(has_good_data(data, 1, 5))
+
+    def test_ignores_record_without_question(self):
+        data = [{"topic": 1, "question_num": 5, "question": ""}]
+        self.assertFalse(has_good_data(data, 1, 5))
+
+    def test_matches_string_keys(self):
+        data = [{"topic": "2", "question_num": "7", "question": "real"}]
+        self.assertTrue(has_good_data(data, 2, 7))
+
+    def test_absent_question(self):
+        data = [{"topic": 1, "question_num": 5, "question": "real"}]
+        self.assertFalse(has_good_data(data, 1, 6))
 
 
 if __name__ == "__main__":
