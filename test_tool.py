@@ -1,0 +1,308 @@
+import json
+import os
+import shutil
+import tempfile
+import unittest
+from unittest.mock import MagicMock, patch
+from io import BytesIO
+from PIL import Image as PILImage
+from docx import Document
+
+from tool import (
+    _add_answer_key_table,
+    _add_picture_fitted,
+    _add_question_docx,
+    _fetch_image_bytes,
+    _IMG_CACHE,
+    _IMG_HEADERS,
+    _SESSION_COOKIES,
+    _HARVESTED_LINKS,
+    _PROXY,
+    set_proxy,
+    extract_discussion_info,
+    find_discussion_link,
+    build_html,
+    canonical_exam_code,
+    convert_to_docx,
+    convert_to_html,
+    is_examtopics_discussion_url,
+    link_matches_question,
+    load_all,
+    no_link_result,
+    NO_DISCUSSION_BLOCKED,
+    NO_DISCUSSION_MISSING,
+    normalize_exam_code,
+    parse_range,
+    save_progress,
+    SEARCH_BLOCKED,
+    SEARCH_EMPTY,
+    SEARCH_ERROR,
+    SEARCH_OK,
+    sync_browser_session,
+    upsert,
+    unwrap_search_href,
+)
+
+
+class TestParseRange(unittest.TestCase):
+    def test_range(self):
+        self.assertEqual(parse_range("1-10"), (1, 10))
+
+    def test_single(self):
+        self.assertEqual(parse_range("5"), (5, 5))
+
+    def test_invalid_text(self):
+        self.assertIsNone(parse_range("abc"))
+
+    def test_empty(self):
+        self.assertIsNone(parse_range(""))
+
+    def test_reversed(self):
+        self.assertEqual(parse_range("10-1"), (10, 1))
+
+
+class TestExamCodeNormalization(unittest.TestCase):
+    def test_canonical_strips_separators(self):
+        self.assertEqual(canonical_exam_code("SK0-005"), "sk0005")
+        self.assertEqual(canonical_exam_code("FCSS_NST_SE-7.6"), "fcssnstse76")
+        self.assertEqual(canonical_exam_code("H12-711_V4.0"), "h12711v40")
+
+    def test_normalize_preserves_valid_slug_chars(self):
+        self.assertEqual(normalize_exam_code("SK0-005"), "sk0-005")
+        self.assertEqual(normalize_exam_code("  FCSS_NST_SE-7.6  "), "fcss_nst_se-7.6")
+        self.assertEqual(normalize_exam_code("H12-711_V4.0"), "h12-711_v4.0")
+        self.assertEqual(normalize_exam_code("az 104"), "az-104")
+
+
+class TestLinkMatching(unittest.TestCase):
+    def test_valid_discussion_slug(self):
+        url = "https://www.examtopics.com/discussions/comptia/view/61482-exam-sk0-005-topic-1-question-1-discussion/"
+        self.assertTrue(link_matches_question(url, "sk0-005", 1, 1))
+
+    def test_mismatched_qnum(self):
+        url = "https://www.examtopics.com/discussions/comptia/view/61482-exam-sk0-005-topic-1-question-10-discussion/"
+        self.assertFalse(link_matches_question(url, "sk0-005", 1, 1))
+
+    def test_dotted_code_matching(self):
+        url = "https://www.examtopics.com/discussions/huawei/view/12345-exam-h12-711_v40-topic-1-question-2-discussion/"
+        self.assertTrue(link_matches_question(url, "H12-711_V4.0", 1, 2))
+
+    def test_non_discussion_url(self):
+        self.assertFalse(link_matches_question("https://www.google.com", "sk0-005", 1, 1))
+        self.assertFalse(link_matches_question(None, "sk0-005", 1, 1))
+
+    def test_is_examtopics_discussion_url(self):
+        self.assertTrue(is_examtopics_discussion_url("https://www.examtopics.com/discussions/view/1/"))
+        self.assertFalse(is_examtopics_discussion_url("https://www.examtopics.com/exams/comptia/"))
+        self.assertFalse(is_examtopics_discussion_url("https://example.com/discussions/"))
+
+
+class TestUnwrapHref(unittest.TestCase):
+    def test_unwrap_duckduckgo_uddg(self):
+        raw = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.examtopics.com%2Fdiscussions%2Ftest"
+        urls = unwrap_search_href(raw, "https://duckduckgo.com")
+        self.assertTrue(any("examtopics.com/discussions/test" in u for u in urls))
+
+    def test_unwrap_relative_discussions(self):
+        urls = unwrap_search_href("/discussions/item", "https://www.examtopics.com")
+        self.assertTrue(any(u.startswith("https://www.examtopics.com/discussions/item") for u in urls))
+
+
+class TestNoLinkResult(unittest.TestCase):
+    def test_primary_ok_fallback_blocked_not_aborted(self):
+        self.assertEqual(no_link_result(SEARCH_OK, SEARCH_BLOCKED), NO_DISCUSSION_MISSING)
+        self.assertEqual(no_link_result(SEARCH_EMPTY, SEARCH_BLOCKED), NO_DISCUSSION_MISSING)
+
+    def test_both_blocked_aborts(self):
+        self.assertEqual(no_link_result(SEARCH_BLOCKED, SEARCH_BLOCKED), NO_DISCUSSION_BLOCKED)
+        self.assertEqual(no_link_result(SEARCH_BLOCKED, SEARCH_ERROR), NO_DISCUSSION_BLOCKED)
+
+    def test_primary_blocked_fallback_ok_not_aborted(self):
+        self.assertEqual(no_link_result(SEARCH_BLOCKED, SEARCH_OK), NO_DISCUSSION_MISSING)
+
+
+class TestUpsertAndOrder(unittest.TestCase):
+    def test_upsert_maintains_sorted_order(self):
+        data = []
+        upsert(data, {"topic": 1, "question_num": 20, "question": "Q20"})
+        upsert(data, {"topic": 1, "question_num": 5, "question": "Q5"})
+        upsert(data, {"topic": 2, "question_num": 1, "question": "T2Q1"})
+        upsert(data, {"topic": 1, "question_num": 1, "question": "Q1"})
+
+        expected = [(1, 1), (1, 5), (1, 20), (2, 1)]
+        actual = [(q["topic"], q["question_num"]) for q in data]
+        self.assertEqual(actual, expected)
+
+    def test_upsert_overwrites_existing(self):
+        data = [{"topic": 1, "question_num": 5, "question": "Old Q5"}]
+        upsert(data, {"topic": 1, "question_num": 5, "question": "New Q5"})
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["question"], "New Q5")
+
+
+class TestNegativeImageCache(unittest.TestCase):
+    def test_failed_image_sets_negative_cache(self):
+        url = "https://invalid-non-existent-domain-test.com/fake.png"
+        _IMG_CACHE.clear()
+        with patch("tool.httpx.get", side_effect=Exception("Network failure")):
+            res = _fetch_image_bytes(url)
+            self.assertIsNone(res)
+            self.assertIn(url, _IMG_CACHE)
+            self.assertIsNone(_IMG_CACHE[url])
+
+            with patch("tool.httpx.get") as mock_get:
+                res2 = _fetch_image_bytes(url)
+                self.assertIsNone(res2)
+                mock_get.assert_not_called()
+
+
+class TestBuildHtml(unittest.TestCase):
+    def test_no_double_escaping_in_payload(self):
+        questions = [
+            {
+                "exam_code": "test",
+                "topic": 1,
+                "question_num": 1,
+                "question": "What is & why?",
+                "question_images": ["https://img.test.com/q.png?a=1&b=2"],
+                "options": [
+                    {"letter": "A", "text": "Opt & text", "images": [], "is_correct": True}
+                ],
+                "suggested_answers": ["A"],
+                "answers": []
+            }
+        ]
+        html_out = build_html(questions, "test", embed_images=False)
+        self.assertNotIn("&amp;amp;", html_out)
+        self.assertIn("https://img.test.com/q.png?a=1&b=2", html_out)
+
+    def test_multi_topic_labels(self):
+        questions = [
+            {"topic": 1, "question_num": 1, "question": "T1Q1", "options": [], "suggested_answers": []},
+            {"topic": 2, "question_num": 1, "question": "T2Q1", "options": [], "suggested_answers": []}
+        ]
+        html_out = build_html(questions, "test", embed_images=False)
+        self.assertIn("Topic 1", html_out)
+        self.assertIn("Topic 2", html_out)
+        self.assertIn("T1 #1", html_out)
+        self.assertIn("T2 #1", html_out)
+
+
+class TestDocxImageFitted(unittest.TestCase):
+    def test_add_picture_fitted(self):
+        doc = Document()
+        im = PILImage.new("RGB", (50, 50), color="blue")
+        buf = BytesIO()
+        im.save(buf, format="PNG")
+        buf.seek(0)
+
+        success = _add_picture_fitted(doc, buf, max_width_inches=5.5)
+        self.assertTrue(success)
+
+
+class TestAnswerKeyTable(unittest.TestCase):
+    def test_answer_key_creates_compact_table(self):
+        doc = Document()
+        questions = [
+            {"topic": 1, "question_num": 1, "question": "Q1", "suggested_answers": ["A"]},
+            {"topic": 1, "question_num": 2, "question": "Q2", "suggested_answers": ["B", "C"]},
+            {"topic": 1, "question_num": 3, "question": "Q3", "suggested_answers": ["D"]},
+            {"topic": 1, "question_num": 4, "question": "Q4", "suggested_answers": []},
+            {"topic": 1, "question_num": 5, "question": "Q5", "community_most_voted": ["C"]},
+        ]
+        _add_answer_key_table(doc, questions)
+        self.assertEqual(len(doc.tables), 1)
+        table = doc.tables[0]
+        self.assertEqual(len(table.columns), 8)
+        self.assertEqual(table.rows[0].cells[0].text, "Cau")
+        self.assertEqual(table.rows[0].cells[1].text, "D/A")
+
+
+class TestBrowserSessionSync(unittest.TestCase):
+    def test_sync_browser_session_updates_headers_and_cookies(self):
+        mock_page = MagicMock()
+        mock_page.evaluate.return_value = "Mozilla/5.0 (Custom macOS UA) TestAgent/1.0"
+        mock_page.context.cookies.return_value = [
+            {"name": "cf_clearance", "value": "test_cf_token"},
+            {"name": "session_id", "value": "123456"}
+        ]
+        sync_browser_session(mock_page)
+        self.assertEqual(_IMG_HEADERS["User-Agent"], "Mozilla/5.0 (Custom macOS UA) TestAgent/1.0")
+        self.assertEqual(_SESSION_COOKIES.get("cf_clearance"), "test_cf_token")
+        self.assertEqual(_SESSION_COOKIES.get("session_id"), "123456")
+
+
+class TestCommunityMostVotedDisplay(unittest.TestCase):
+    def test_html_displays_most_voted_chip_when_different(self):
+        questions = [
+            {
+                "topic": 1,
+                "question_num": 1,
+                "question": "What is x?",
+                "options": [],
+                "suggested_answers": ["A"],
+                "community_most_voted": ["B"]
+            }
+        ]
+        html_out = build_html(questions, "test", embed_images=False)
+        self.assertIn("Most Voted: B", html_out)
+
+    def test_docx_displays_community_voted_when_different(self):
+        doc = Document()
+        q = {
+            "topic": 1,
+            "question_num": 1,
+            "question": "What is x?",
+            "options": [],
+            "suggested_answers": ["A"],
+            "community_most_voted": ["B"]
+        }
+        _add_question_docx(doc, q, 1)
+        full_text = "\n".join(p.text for p in doc.paragraphs)
+        self.assertIn("Cộng đồng: B", full_text)
+
+
+
+
+class TestDiscussionInfoExtraction(unittest.TestCase):
+    def test_extract_discussion_info_valid(self):
+        url = "https://www.examtopics.com/discussions/comptia/view/71586-exam-sk0-005-topic-1-question-3-discussion/"
+        info = extract_discussion_info(url)
+        self.assertEqual(info, ("sk0005", 1, 3))
+
+    def test_extract_discussion_info_dotted(self):
+        url = "https://www.examtopics.com/discussions/huawei/view/12345-exam-h12-711_v40-topic-2-question-15-discussion/"
+        info = extract_discussion_info(url)
+        self.assertEqual(info, ("h12711v40", 2, 15))
+
+    def test_extract_discussion_info_invalid(self):
+        self.assertIsNone(extract_discussion_info("https://example.com"))
+        self.assertIsNone(extract_discussion_info("https://www.examtopics.com/exams/comptia/"))
+
+
+class TestHarvestedLinksCache(unittest.TestCase):
+    def test_harvested_links_skips_search(self):
+        _HARVESTED_LINKS.clear()
+        key = ("sk0005", 1, 99)
+        test_url = "https://www.examtopics.com/discussions/comptia/view/99999-exam-sk0-005-topic-1-question-99-discussion/"
+        _HARVESTED_LINKS[key] = test_url
+
+        mock_page = MagicMock()
+        result = find_discussion_link(mock_page, "sk0-005", 1, 99)
+        self.assertEqual(result, test_url)
+        mock_page.goto.assert_not_called()
+
+
+class TestProxyConfiguration(unittest.TestCase):
+    def test_set_proxy(self):
+        set_proxy("http://127.0.0.1:8888")
+        from tool import _PROXY
+        # Check through getter or import
+        from examtopic.config import _PROXY as conf_proxy
+        self.assertEqual(conf_proxy, "http://127.0.0.1:8888")
+        set_proxy(None)
+
+
+if __name__ == "__main__":
+
+    unittest.main()

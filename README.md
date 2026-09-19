@@ -10,11 +10,15 @@ Tự động thu thập câu hỏi từ ExamTopics, lưu kết quả dưới d�
 * Gõ query vào ô tìm kiếm như người dùng thật (humanize).
 * Fingerprint macOS nhất quán qua CloakBrowser.
 * Lọc link chính xác theo slug — bỏ qua trang tổng hợp, câu/mã đề khác và link wrapper.
-* Thu thập đầy đủ: đề bài, hình ảnh, các lựa chọn (A/B/C/D...), đáp án gợi ý, bình luận cộng đồng.
+* Thu thập đầy đủ: đề bài, hình ảnh, các lựa chọn (A/B/C/D...), đáp án gợi ý và đáp án bình chọn của cộng đồng (Community Most Voted & Vote breakdown).
+* Đồng bộ User-Agent động và session cookies từ Playwright sang httpx đảm bảo tính nhất quán và chống chặn Cloudflare.
 * Lấy cả URL hình trong đề bài và trong từng lựa chọn (nếu có).
 * Chuyển kết quả sang HTML tự chứa CSS/JS và DOCX (ảnh nhúng sẵn) sau khi crawl xong.
 * Trang HTML có hai chế độ: ôn tập chủ động (tìm kiếm, che/mở đáp án, đánh dấu câu cần ôn) và thi thử có hẹn giờ/chấm điểm.
 * Tải ảnh song song khi convert DOCX (10 luồng).
+* Nạp nội dung thảo luận siêu tốc qua HTTP-first (~1s thay vì 15s chờ tải quảng cáo/tracker).
+* Cơ chế Opportunistic Link Harvester: tự động gom và nhớ các link discussion xuất hiện trên trang tìm kiếm để tái sử dụng, bỏ qua tìm kiếm khi đã có sẵn link.
+* Hỗ trợ tham số `--proxy` (HTTP/SOCKS5) bảo vệ IP và hỗ trợ crawl quy mô lớn.
 * Fallback tải trang qua HTTP khi trình duyệt load trang discussion bị treo.
 * Dọn tab sau mỗi câu, chỉ giữ lại một tab tìm kiếm.
 * Hỗ trợ mã đề nhiều định dạng: gạch nối, gạch dưới, dấu chấm (`sk0-005`, `az-104`, `FCSS_NST_SE-7.6`).
@@ -23,7 +27,7 @@ Tự động thu thập câu hỏi từ ExamTopics, lưu kết quả dưới d�
 
 ## Yêu cầu
 
-* Python 3.8+
+* Python 3.9+
 * Kết nối Internet
 * Linux/macOS hoặc Windows (WSL2 khuyến nghị)
 * Màn hình hiển thị (tool chạy trình duyệt ở chế độ headed)
@@ -80,17 +84,20 @@ DOCX: output/sk0005_questions.docx
 # Crawl tự động và tự convert sau khi hoàn thành (-y)
 python3 tool.py -e FCSS_NST_SE-7.6 -t 1 -r 1-50 -y
 
+# Crawl qua Proxy HTTP hoặc SOCKS5
+python3 tool.py -e az-104 -t 1 -r 1-100 -p http://127.0.0.1:8080 -y
+
 # Chỉ convert file JSON đã có sang HTML + DOCX (không cần mở browser)
 python3 tool.py --convert-only output/sk0005_questions.json
 ```
 
 ## Cách hoạt động
 
-Với mỗi câu hỏi, tool tra URL trang discussion theo thứ tự:
+Với mỗi câu hỏi, tool vận hành theo luồng tối ưu:
 
-1. Tìm trên DuckDuckGo (kèm `site:examtopics.com`).
-2. Nếu không thấy link khớp đúng câu, tìm lại trên Google.
-3. Mở trang discussion tìm được; nếu trình duyệt load treo, tải nội dung qua HTTP rồi bóc dữ liệu.
+1. **Kiểm tra bộ nhớ đệm (Link Cache)**: Nếu câu hỏi đã có link trong cache (từ file JSON cũ hoặc được thu thập từ các lần tìm kiếm trước), tool dùng ngay mà không cần tìm kiếm.
+2. **Tìm kiếm thông minh**: Nếu chưa có trong cache, tool gõ query vào DuckDuckGo (kèm `site:examtopics.com`). Trong quá trình này, tool tự động gom tất cả các link câu hỏi khác xuất hiện trên trang tìm kiếm để dùng lại cho các câu sau. Nếu DuckDuckGo không ra link khớp, tự chuyển sang Google.
+3. **Nạp nội dung siêu tốc (Fast HTTP-first)**: Dùng `httpx` nạp trực tiếp mã nguồn HTML đã bypass Cloudflare vào tab (~1s) thay vì chờ 15s tải quảng cáo/tracker; tự động fallback sang điều hướng thông thường trong trình duyệt nếu HTTP gặp lỗi.
 
 ## Kết quả
 
@@ -112,6 +119,8 @@ JSON mỗi câu có dạng:
     { "letter": "D", "text": "A virtual administration console", "images": [], "is_correct": false }
   ],
   "suggested_answers": ["A", "B"],
+  "community_most_voted": ["B"],
+  "community_votes": [{"voted_answers": "B", "vote_count": 12, "is_most_voted": true}],
   "answers": ["Definitely B and D...", "..."],
   "url": "https://www.examtopics.com/discussions/..."
 }
@@ -123,13 +132,31 @@ Ghi chú:
 * `suggested_answers` là danh sách — hỗ trợ câu "Choose two/three".
 * Câu không có hình thì các trường ảnh là mảng rỗng.
 
+### Cấu trúc mã nguồn
+
+* `examtopic/`: Gói module lõi phân tách theo trách nhiệm:
+  * `config.py`: Quản lý cấu hình engine, hằng số, proxy và cache ảnh 2 tầng.
+  * `parser.py`: Chuẩn hóa mã đề, so khớp slug, unwrap redirect và lưu JSON atomic.
+  * `crawler.py`: Điều phối tìm kiếm, nạp discussion, đồng bộ session và bóc dữ liệu.
+  * `exporters/`: Dựng HTML ôn tập/thi thử (`html.py`) và Word kèm Answer Key (`docx.py`).
+* `tool.py`: CLI entrypoint điều phối chính, re-export 100% tương thích ngược.
+* `test_tool.py`: Bộ 32 unit tests tự động kiểm thử toàn bộ luồng xử lý.
+
+### Kiểm thử
+
+Chạy bộ unit test để xác minh tính toàn vẹn:
+
+```bash
+python3 -m unittest test_tool.py
+```
+
 ### File đầu ra
 
 | File | Mô tả |
 |---|---|
 | `{exam}_questions.json` | Dữ liệu gốc |
 | `{exam}_questions.html` | Trang ôn tập tự chứa (ảnh base64), đáp án che mặc định, có tìm kiếm/đánh dấu câu cần ôn và chế độ thi thử |
-| `{exam}_questions.docx` | Mở bằng Word/LibreOffice, đáp án in đậm xanh + dấu ✓, ảnh nhúng sẵn — tự convert sang PDF nếu cần |
+| `{exam}_questions.docx` | Mở bằng Word/LibreOffice, đáp án in đậm xanh + dấu ✓, ảnh nhúng sẵn, kèm bảng tra đáp án nhanh (Answer Key) ở cuối tài liệu |
 
 ## Cấu hình
 
