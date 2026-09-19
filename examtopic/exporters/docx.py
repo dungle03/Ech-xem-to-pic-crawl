@@ -8,6 +8,7 @@ from docx.oxml import OxmlElement
 from PIL import Image as PILImage
 
 from ..config import _preload_images, _fetch_image
+from ..parser import as_int
 
 # Bang mau dung chung (dong bo voi HTML: xanh la dam cho dap an dung).
 COLOR_HEADING = RGBColor(0x16, 0x21, 0x3E)   # xanh dam
@@ -225,7 +226,7 @@ def convert_to_docx(json_path, hide_answers=False):
     if not questions:
         raise ValueError("Khong co cau hoi hop le trong file.")
 
-    questions = sorted(questions, key=lambda q: (int(q.get("topic") or 1), int(q.get("question_num") or 0)))
+    questions = sorted(questions, key=lambda q: (as_int(q.get("topic"), 1) or 1, as_int(q.get("question_num"), 0)))
     show_topic = len(set(q.get("topic", 1) for q in questions)) > 1
 
     _preload_images(questions)

@@ -489,6 +489,35 @@ class TestHasGoodData(unittest.TestCase):
         self.assertFalse(has_good_data(data, 1, 6))
 
 
+class TestConvertMalformedData(unittest.TestCase):
+    """Converter khong duoc crash khi du lieu di dang (question_num/topic khong
+    phai so) -- truoc day dung int() tran gay ValueError lam hong ca buoc convert.
+    """
+
+    def _write(self, data):
+        tmp = tempfile.mkdtemp()
+        path = os.path.join(tmp, "x_questions.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        return path
+
+    def test_non_numeric_question_num_does_not_crash(self):
+        path = self._write([{
+            "exam_code": "X", "topic": "1", "question_num": "abc",
+            "question": "q", "options": [], "suggested_answers": [], "answers": [],
+        }])
+        convert_to_html(path)
+        convert_to_docx(path)
+
+    def test_none_topic_and_num_do_not_crash(self):
+        path = self._write([{
+            "exam_code": "X", "topic": None, "question_num": None,
+            "question": "q", "options": [], "suggested_answers": [], "answers": [],
+        }])
+        convert_to_html(path)
+        convert_to_docx(path)
+
+
 class TestDocxFormatting(unittest.TestCase):
     def _one_question(self):
         return [{

@@ -3,10 +3,10 @@ import json
 import base64
 
 from ..config import _preload_images, _fetch_image_bytes
-from ..parser import escape_html
+from ..parser import escape_html, as_int
 
 def build_html(questions, exam_code, embed_images=True):
-    questions = sorted(questions, key=lambda q: (int(q.get("topic") or 1), int(q.get("question_num") or 0)))
+    questions = sorted(questions, key=lambda q: (as_int(q.get("topic"), 1) or 1, as_int(q.get("question_num"), 0)))
     multiple_topics = len(set(q.get("topic", 1) for q in questions)) > 1
 
     if embed_images:
@@ -815,7 +815,7 @@ def convert_to_html(json_path, embed_images=True):
     questions = [q for q in data if isinstance(q, dict) and q.get("question")]
     if not questions:
         raise ValueError("Khong co cau hoi hop le trong file.")
-    questions = sorted(questions, key=lambda q: (int(q.get("topic") or 1), int(q.get("question_num") or 0)))
+    questions = sorted(questions, key=lambda q: (as_int(q.get("topic"), 1) or 1, as_int(q.get("question_num"), 0)))
     exam_code = questions[0].get("exam_code", "exam")
     html = build_html(questions, exam_code, embed_images=embed_images)
     out_path = os.path.splitext(json_path)[0] + ".html"
