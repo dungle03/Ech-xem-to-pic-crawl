@@ -57,6 +57,14 @@ def extract_discussion_info(href):
 
 
 def link_matches_question(href, exam_code, topic, qnum):
+    """Kiem tra mot href co tro dung cau hoi (code + topic + qnum) khong.
+
+    Luu y: pipeline crawl hien tai KHONG goi ham nay truc tiep -- no dung
+    `extract_discussion_info()` + so sanh tuple trong `extract_matching_link()`.
+    Ham duoc giu lai nhu mot tien ich so khop doc lap (va duoc xuat qua
+    `examtopic.link_matches_question` + `tool.link_matches_question`) de khong
+    pha vo API cong khai.
+    """
     if not href or 'examtopics.com/discussions' not in href.lower():
         return False
     href = href.lower()
