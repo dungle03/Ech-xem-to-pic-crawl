@@ -1,0 +1,44 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "model": "seekai/deepseek-v4-pro",
+
+
+  "provider": {
+    "seekai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "SeekAI",
+
+      "options": {
+        "baseURL": "https://seekai.cc/v1",
+        "apiKey": "{env:SEEKAI_API_KEY}"
+      },
+
+      "models": {
+        "deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro"
+        },
+
+        "deepseek-v4.1-flash": {
+          "name": "DeepSeek V4.1 Flash"
+        },
+
+        "glm-5.3-flash": {
+          "name": "GLM 5.3 Flash"
+        },
+
+        "gemini-3.8-flash": {
+          "name": "Gemini 3.8 Flash"
+        },
+
+        "gpt-5.6-luna": {
+          "name": "GPT 5.6 Luna"
+        },
+
+        "Qwen3.8-Flash": {
+          "name": "Qwen 3.8 Flash"
+        }
+      }
+    }
+  }
+}
