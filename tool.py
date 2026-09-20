@@ -5,6 +5,8 @@ import time
 from cloakbrowser import launch
 
 from examtopic import (
+    LOG,
+    configure_logging,
     MIN_DELAY,
     MAX_DELAY,
     RETRY_LIMIT,
@@ -67,6 +69,8 @@ __all__ = [
     "RETRY_LIMIT",
     "BLOCKED_ABORT_STREAK",
     "OUTPUT_DIR",
+    "LOG",
+    "configure_logging",
     "DEFAULT_OP_TIMEOUT",
     "NO_DISCUSSION_BLOCKED",
     "NO_DISCUSSION_MISSING",
@@ -142,29 +146,34 @@ def parse_args():
     parser.add_argument("--convert-only", help="Duong dan file JSON can convert truc tiep sang HTML va DOCX")
     parser.add_argument("--hide-answers", action="store_true", help="An dap an trong file DOCX (che do tu luyen, dap an chi con o bang Answer Key)")
     parser.add_argument("--headless", action="store_true", help="Chay browser an (khong hien cua so). Dung tren server/CI khong co man hinh; mac dinh la hien de giam CAPTCHA khi search.")
+    # Nhom dieu khien muc do log. Mac dinh (khong flag) giu nguyen output nhu cu.
+    log_group = parser.add_mutually_exclusive_group()
+    log_group.add_argument("-q", "--quiet", action="store_true", help="Chi in canh bao va loi (tat tien do). Hop voi CI hoac khi ghi log ra file.")
+    log_group.add_argument("-v", "--verbose", action="store_true", help="In them chi tiet chan doan (retry, cache, tai anh...). Hop voi khi debug.")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    configure_logging(quiet=args.quiet, verbose=args.verbose)
 
     if args.convert_only:
         json_path = args.convert_only
         if not os.path.exists(json_path):
-            print(f"Loi: Khong tim thay file {json_path}")
+            LOG.error(f"Loi: Khong tim thay file {json_path}")
             sys.exit(1)
         try:
             convert_to_html(json_path)
             convert_to_docx(json_path, hide_answers=args.hide_answers)
         except Exception as e:
             # Tra ve ma loi khac 0 de script/CI khong tuong nham la thanh cong.
-            print(f"Loi convert: {e}")
+            LOG.error(f"Loi convert: {e}")
             sys.exit(2)
         return
 
-    print("="*60)
-    print("  CRAWL EXAMTOPICS - BAN LUU LIEN TUC")
-    print("="*60)
+    LOG.info("="*60)
+    LOG.info("  CRAWL EXAMTOPICS - BAN LUU LIEN TUC")
+    LOG.info("="*60)
 
     if args.exam:
         exam_code = args.exam.strip()
@@ -188,7 +197,7 @@ def main():
     if range_input:
         parsed = parse_range(range_input)
         if parsed is None:
-            print("  Pham vi khong hop le, dung mac dinh 1-120.")
+            LOG.warning("  Pham vi khong hop le, dung mac dinh 1-120.")
             start_q, end_q = 1, 120
         else:
             start_q, end_q = parsed
@@ -212,7 +221,7 @@ def main():
     # truoc (nguoc lai voi file du lieu chinh da duoc bao toan).
     error_records = load_all(error_path)
     if error_records:
-        print(f"  Nap san {len(error_records)} ban ghi loi tu output/{error_filename}.")
+        LOG.info(f"  Nap san {len(error_records)} ban ghi loi tu output/{error_filename}.")
 
     all_data = load_all(filepath)
     for rec in all_data:
@@ -221,16 +230,16 @@ def main():
             if info:
                 _HARVESTED_LINKS[info] = rec["url"]
     if _HARVESTED_LINKS:
-        print(f"  Nap san {len(_HARVESTED_LINKS)} link discussion tu du lieu cu vao bo nho cache.")
+        LOG.info(f"  Nap san {len(_HARVESTED_LINKS)} link discussion tu du lieu cu vao bo nho cache.")
 
     if args.proxy:
         set_proxy(args.proxy.strip())
-        print(f"  Su dung proxy: {args.proxy.strip()}")
+        LOG.info(f"  Su dung proxy: {args.proxy.strip()}")
 
-    print(f"\nCrawl {search_code.upper()}, topic {topic}, cau {start_q}-{end_q}")
-    print("-"*60)
+    LOG.info(f"\nCrawl {search_code.upper()}, topic {topic}, cau {start_q}-{end_q}")
+    LOG.info("-"*60)
 
-    print("Khoi dong CloakBrowser...")
+    LOG.info("Khoi dong CloakBrowser...")
     fp_seed = random.randint(10000, 99999)
     browser = launch(
         headless=args.headless,
@@ -257,9 +266,9 @@ def main():
         context.set_default_timeout(DEFAULT_OP_TIMEOUT)
         page = context.new_page()
         sync_browser_session(page)
-        print("Warm-up DuckDuckGo (tao session)...")
+        LOG.info("Warm-up DuckDuckGo (tao session)...")
         if not warmup_search(page):
-            print("  Canh bao: khong tai duoc DuckDuckGo, van thu crawl tiep.")
+            LOG.warning("  Canh bao: khong tai duoc DuckDuckGo, van thu crawl tiep.")
         sync_browser_session(page)
 
         interrupted = False
@@ -267,7 +276,7 @@ def main():
         blocked_streak = 0
         try:
             for qnum in range(start_q, end_q + 1):
-                print(f"\n[{qnum - start_q + 1}/{total}] cau {qnum}")
+                LOG.info(f"\n[{qnum - start_q + 1}/{total}] cau {qnum}")
 
                 result = None
                 no_link_reason = ""
@@ -283,10 +292,10 @@ def main():
                         break
                     if isinstance(result, dict):
                         break
-                    print(f"  That bai lan {attempt}/{RETRY_LIMIT} cho cau {qnum}")
+                    LOG.info(f"  That bai lan {attempt}/{RETRY_LIMIT} cho cau {qnum}")
                     if attempt < RETRY_LIMIT:
                         retry_wait = random.uniform(3, 6)
-                        print(f"  -> Thu lai sau {retry_wait:.1f} giay...")
+                        LOG.info(f"  -> Thu lai sau {retry_wait:.1f} giay...")
                         time.sleep(retry_wait)
 
                 if result is NO_DISCUSSION_BLOCKED:
@@ -297,7 +306,7 @@ def main():
                 if isinstance(result, dict):
                     upsert(all_data, result)
                     added += 1
-                    print(f"  Luu cau {qnum} vao output/{filename}")
+                    LOG.info(f"  Luu cau {qnum} vao output/{filename}")
                 else:
                     failed.append(qnum)
                     if result is NO_DISCUSSION_BLOCKED:
@@ -313,7 +322,7 @@ def main():
                         # vao file du lieu chinh. Neu tron vao, file chinh co N
                         # record nhung convert chi ra it hon -> nguoi dung tuong mat
                         # cau. Ban ghi loi chi de ghi nhan, khong chan crawl lai.
-                        print(f"  KHONG LAY DUOC cau {qnum} -> ghi vao {error_filename} va bo qua")
+                        LOG.info(f"  KHONG LAY DUOC cau {qnum} -> ghi vao {error_filename} va bo qua")
                         # Dung upsert (khong phai append) de neu cau nay da co ban
                         # ghi loi tu lan chay truoc thi cap nhat tai cho, tranh
                         # trung lap khi chay lai nhieu lan.
@@ -324,37 +333,37 @@ def main():
                             "error": error_msg,
                         })
                     else:
-                        print(f"  Khong lay duoc cau {qnum} nhung giu du lieu tot tu lan truoc.")
+                        LOG.info(f"  Khong lay duoc cau {qnum} nhung giu du lieu tot tu lan truoc.")
                 save_progress(all_data, filename)
 
                 if blocked_streak >= BLOCKED_ABORT_STREAK:
-                    print(f"\n[!] Bi chan/CAPTCHA {BLOCKED_ABORT_STREAK} cau lien tiep "
+                    LOG.info(f"\n[!] Bi chan/CAPTCHA {BLOCKED_ABORT_STREAK} cau lien tiep "
                           f"-> dung phien som. Data da luu an toan, chay lai sau.")
                     aborted = True
                     break
 
                 if qnum < end_q:
                     wait = random.uniform(MIN_DELAY, MAX_DELAY)
-                    print(f"  Nghi {wait:.1f}s truoc cau tiep theo...")
+                    LOG.info(f"  Nghi {wait:.1f}s truoc cau tiep theo...")
                     time.sleep(wait)
         except KeyboardInterrupt:
             interrupted = True
-            print("\n\n[!] Da dung theo yeu cau nguoi dung (Ctrl+C).")
+            LOG.info("\n\n[!] Da dung theo yeu cau nguoi dung (Ctrl+C).")
 
-        print("\n"+"="*60)
+        LOG.info("\n"+"="*60)
         status_label = "Tam dung!" if interrupted else ("Dung som vi bi chan!" if aborted else "Hoan tat!")
-        print(f"{status_label} Lay duoc {added}/{total} cau trong phien nay (tong file: {len(all_data)}).")
+        LOG.info(f"{status_label} Lay duoc {added}/{total} cau trong phien nay (tong file: {len(all_data)}).")
         if failed:
-            print(f"Khong lay duoc {len(failed)} cau: {', '.join(str(q) for q in failed)}")
+            LOG.info(f"Khong lay duoc {len(failed)} cau: {', '.join(str(q) for q in failed)}")
         if failed_blocked:
-            print(f"  Vi search bi chan/CAPTCHA: {', '.join(map(str, failed_blocked))}")
+            LOG.info(f"  Vi search bi chan/CAPTCHA: {', '.join(map(str, failed_blocked))}")
         if failed_missing:
-            print(f"  Vi thuc su khong co discussion: {', '.join(map(str, failed_missing))}")
-        print(f"Ket qua: output/{filename}")
+            LOG.info(f"  Vi thuc su khong co discussion: {', '.join(map(str, failed_missing))}")
+        LOG.info(f"Ket qua: output/{filename}")
         if error_records:
             save_progress(error_records, error_filename)
-            print(f"Cau loi ({len(error_records)}) luu rieng tai output/{error_filename}")
-        print("="*60)
+            LOG.info(f"Cau loi ({len(error_records)}) luu rieng tai output/{error_filename}")
+        LOG.info("="*60)
 
         if all_data:
             if args.yes:
@@ -366,7 +375,7 @@ def main():
                     convert_to_html(filepath)
                     convert_to_docx(filepath, hide_answers=args.hide_answers)
                 except Exception as e:
-                    print(f"  Loi convert: {e}")
+                    LOG.info(f"  Loi convert: {e}")
     finally:
         safe_close(page)
         safe_close(context)

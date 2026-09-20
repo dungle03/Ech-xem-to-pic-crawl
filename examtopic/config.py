@@ -1,24 +1,52 @@
 import os
 import re
+import sys
+import logging
 import hashlib
 import httpx
 from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image as PILImage
 
-MIN_DELAY = 2
-MAX_DELAY = 5
-RETRY_LIMIT = 3
-BLOCKED_ABORT_STREAK = 3
+
+def _env_int(name, default):
+    """Doc bien moi truong dang so nguyen, tra ve `default` neu thieu/khong hop le.
+
+    Cho phep tinh chinh delay/retry qua env ma khong phai sua code:
+        MIN_DELAY=5 MAX_DELAY=9 python3 tool.py -e az-104
+    Gia tri rac (chu, so am) bi bo qua va roi ve mac dinh thay vi lam crash tool.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
+def _env_str(name, default):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    raw = raw.strip()
+    return raw or default
+
+
+MIN_DELAY = _env_int("MIN_DELAY", 2)
+MAX_DELAY = _env_int("MAX_DELAY", 5)
+RETRY_LIMIT = _env_int("RETRY_LIMIT", 3)
+BLOCKED_ABORT_STREAK = _env_int("BLOCKED_ABORT_STREAK", 3)
 
 # Retry tai discussion bang HTTP khi Cloudflare tra 429/503 giua phien.
-RETRY_HTTP_ATTEMPTS = 2
-RETRY_HTTP_BACKOFF = 1.0
+RETRY_HTTP_ATTEMPTS = _env_int("RETRY_HTTP_ATTEMPTS", 2)
+RETRY_HTTP_BACKOFF = float(_env_int("RETRY_HTTP_BACKOFF", 1))
 
-OUTPUT_DIR = "output"
+OUTPUT_DIR = _env_str("OUTPUT_DIR", "output")
 _IMG_CACHE_DIR = os.path.join(OUTPUT_DIR, ".imgcache")
 
-DEFAULT_OP_TIMEOUT = 30000
+DEFAULT_OP_TIMEOUT = _env_int("DEFAULT_OP_TIMEOUT", 30000)
 
 NO_DISCUSSION_BLOCKED = object()
 NO_DISCUSSION_MISSING = object()
@@ -33,6 +61,70 @@ _IMG_CACHE = {}
 _SESSION_COOKIES = {}
 _HARVESTED_LINKS = {}
 _PROXY = None
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+# Tool nay xuat ra console de nguoi dung theo doi tien do truc tiep, nen KHONG
+# dung format logging mac dinh (co timestamp/level) -- no se lam thay doi toan
+# bo output ma nguoi dung da quen. Thay vao do ta ve dung chuoi goc, va dung
+# level chi de LOC bot khi chay CI/nen (--quiet) hoac hien them khi debug.
+#
+# Mac dinh (khong co flag) cho ra output Y HET phan lon truong hop cu.
+LOG = logging.getLogger("examtopic")
+
+_LEVEL_STYLES = {
+    logging.DEBUG: "verbose",
+    logging.INFO: "normal",
+    logging.WARNING: "normal",
+    logging.ERROR: "normal",
+}
+
+
+class _PlainFormatter(logging.Formatter):
+    """Giu nguyen chuoi goc, khong them timestamp/level/ten logger."""
+
+    def format(self, record):
+        message = record.getMessage()
+        # Giu kha nang in loi kem traceback khi can (exc_info).
+        if record.exc_info:
+            message += "\n" + self.formatException(record.exc_info)
+        return message
+
+
+def _build_handler(stream):
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(_PlainFormatter())
+    return handler
+
+
+def configure_logging(quiet=False, verbose=False, stream=None):
+    """Thiet lap muc log cho tool.
+
+    - Mac dinh: INFO  -> in moi thu nhu cu (khong doi hanh vi).
+    - quiet    : WARNING -> chi in canh bao/loi, hop voi CI hoac ghi log file.
+    - verbose  : DEBUG   -> in them chi tiet chan doan (retry, cache, ...).
+
+    Tra ve level da dat de tien test.
+    """
+    if quiet:
+        level = logging.WARNING
+    elif verbose:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+    LOG.setLevel(level)
+    LOG.propagate = False
+    for handler in list(LOG.handlers):
+        LOG.removeHandler(handler)
+    LOG.addHandler(_build_handler(stream if stream is not None else sys.stdout))
+    return level
+
+
+# Cau hinh mac dinh ngay khi import: giu nguyen hanh vi cu (in ra stdout).
+configure_logging()
+
 
 def set_proxy(proxy_url):
     global _PROXY
@@ -159,7 +251,7 @@ def _preload_images(questions):
     if not todo:
         return
     total_imgs = len(todo)
-    print(f"  Dang tai {total_imgs} anh (song song)...")
+    LOG.info(f"  Dang tai {total_imgs} anh (song song)...")
     limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
     with httpx.Client(headers=_IMG_HEADERS, cookies=_SESSION_COOKIES or None, proxy=_PROXY, limits=limits, timeout=_IMG_TIMEOUT, follow_redirects=True) as client:
         with ThreadPoolExecutor(max_workers=10) as pool:
@@ -169,4 +261,6 @@ def _preload_images(questions):
             for future in as_completed(futures):
                 done += 1
                 if done % step == 0 or done == total_imgs:
-                    print(f"    Tien do tai anh: {done}/{total_imgs}")
+                    # Giu o INFO de output mac dinh KHONG doi so voi truoc.
+                    # Khi chay --quiet thi dong nay (va moi INFO khac) se tat.
+                    LOG.info(f"    Tien do tai anh: {done}/{total_imgs}")

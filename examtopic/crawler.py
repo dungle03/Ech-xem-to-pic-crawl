@@ -5,6 +5,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from . import config
 from .config import (
+    LOG,
     DEFAULT_OP_TIMEOUT,
     RETRY_HTTP_ATTEMPTS,
     RETRY_HTTP_BACKOFF,
@@ -74,7 +75,7 @@ def safe_goto(page, url, timeout=60000):
         time.sleep(1)
         return True
     except Exception as e:
-        print(f"    Loi dieu huong: {e}")
+        LOG.warning(f"    Loi dieu huong: {e}")
         return False
 
 def warmup_search(page):
@@ -131,15 +132,15 @@ def search_engine(page, query, engine="duckduckgo"):
     """
     cfg = SEARCH_ENGINES.get(engine)
     if not cfg:
-        print(f"  Engine khong ho tro: {engine}")
+        LOG.warning(f"  Engine khong ho tro: {engine}")
         return SEARCH_ERROR
 
     # Luon ve trang chu de co o tim kiem trong, sach.
     if not safe_goto(page, cfg["home"]):
-        print(f"  Khong tai duoc {engine}")
+        LOG.warning(f"  Khong tai duoc {engine}")
         return SEARCH_BLOCKED
     if _search_is_blocked(page):
-        print(f"  {engine} dang hien CAPTCHA/challenge")
+        LOG.warning(f"  {engine} dang hien CAPTCHA/challenge")
         return SEARCH_BLOCKED
     time.sleep(random.uniform(0.5, 1.0))
 
@@ -156,7 +157,7 @@ def search_engine(page, query, engine="duckduckgo"):
         except Exception:
             continue
     if not search_box:
-        print(f"  Khong tim thay o tim kiem {engine}")
+        LOG.warning(f"  Khong tim thay o tim kiem {engine}")
         return SEARCH_BLOCKED
 
     # Click vao o, xoa sach noi dung cu (phong khi con sot), go query moi.
@@ -178,7 +179,7 @@ def search_engine(page, query, engine="duckduckgo"):
         time.sleep(random.uniform(0.3, 0.7))
         page.keyboard.press("Enter")
     except Exception as e:
-        print(f"  Loi go query: {e}")
+        LOG.warning(f"  Loi go query: {e}")
         return SEARCH_ERROR
 
     # Cho ket qua hien. Ket qua render bat dong bo SAU khi domcontentloaded
@@ -196,7 +197,7 @@ def search_engine(page, query, engine="duckduckgo"):
         pass
     time.sleep(random.uniform(0.8, 1.5))
     if _search_is_blocked(page):
-        print(f"  {engine} bi chan/CAPTCHA sau khi search")
+        LOG.warning(f"  {engine} bi chan/CAPTCHA sau khi search")
         return SEARCH_BLOCKED
     return SEARCH_OK if got_results else SEARCH_EMPTY
 
@@ -209,7 +210,7 @@ def find_discussion_link(page, exam_code, topic, qnum):
     target_key = (canonical_exam_code(exam_code), int(topic), int(qnum))
     if target_key in _HARVESTED_LINKS:
         cached_url = _HARVESTED_LINKS[target_key]
-        print(f"  [Bo nho cache] Dung link discussion da thu thap: {cached_url}")
+        LOG.info(f"  [Bo nho cache] Dung link discussion da thu thap: {cached_url}")
         return cached_url
 
     query = (f"exam {exam_code} topic {topic} question {qnum} "
@@ -222,11 +223,11 @@ def find_discussion_link(page, exam_code, topic, qnum):
         if href:
             return href
     if ddg_status == SEARCH_BLOCKED:
-        print("  DuckDuckGo bi chan/CAPTCHA, thu Google...")
+        LOG.info("  DuckDuckGo bi chan/CAPTCHA, thu Google...")
     elif ddg_status == SEARCH_EMPTY:
-        print("  DuckDuckGo khong tra ve ket qua nao, thu Google...")
+        LOG.info("  DuckDuckGo khong tra ve ket qua nao, thu Google...")
     else:
-        print("  DuckDuckGo khong co link dung cau, thu Google...")
+        LOG.info("  DuckDuckGo khong co link dung cau, thu Google...")
 
     # 2. Google (fallback)
     google_status = search_engine(page, query, "google")
@@ -290,21 +291,21 @@ def load_discussion_via_http(tab, href, timeout=20):
             resp = httpx.get(href, headers={"User-Agent": ua}, cookies=cookies, proxy=proxy, timeout=timeout,
                              follow_redirects=True)
         except httpx.RequestError as e:
-            print(f"    Loi ket noi HTTP fallback: {e}")
+            LOG.warning(f"    Loi ket noi HTTP fallback: {e}")
             return False
         except Exception as e:
-            print(f"    Loi ngoai le HTTP fallback: {e}")
+            LOG.warning(f"    Loi ngoai le HTTP fallback: {e}")
             return False
         if resp.status_code == 200 and resp.text:
             html_text = resp.text
             break
         if resp.status_code in retry_statuses and attempt < RETRY_HTTP_ATTEMPTS:
             wait = RETRY_HTTP_BACKOFF * (2 ** attempt)
-            print(f"    HTTP {resp.status_code} - thu lai sau {wait:.0f}s "
+            LOG.info(f"    HTTP {resp.status_code} - thu lai sau {wait:.0f}s "
                   f"(lan {attempt + 1}/{RETRY_HTTP_ATTEMPTS})...")
             time.sleep(wait)
             continue
-        print(f"    HTTP fallback tra ve ma HTTP {resp.status_code}")
+        LOG.info(f"    HTTP fallback tra ve ma HTTP {resp.status_code}")
         return False
     if html_text is None:
         return False
@@ -322,7 +323,7 @@ def load_discussion_via_http(tab, href, timeout=20):
             html_text,
         )
     except Exception as e:
-        print(f"    Loi nap HTML vao tab: {e}")
+        LOG.warning(f"    Loi nap HTML vao tab: {e}")
         return False
     return tab.query_selector('.discussion-header-container') is not None
 
@@ -335,7 +336,7 @@ def crawl_one_question(page, exam_code, topic, qnum):
     """
     new_tab = None
     query = f"exam {exam_code} topic {topic} question {qnum} discussion"
-    print(f"\n[Search] {query}")
+    LOG.info(f"\n[Search] {query}")
 
     try:
         # Dam bao dau moi cau chi con 1 tab DDG (don tab cu/popup neu con sot).
@@ -346,41 +347,41 @@ def crawl_one_question(page, exam_code, topic, qnum):
         #      nham cau khac/ma de khac/trang tong hop.
         href = find_discussion_link(page, exam_code, topic, qnum)
         if href is NO_DISCUSSION_BLOCKED:
-            print(f"  Bo qua cau {qnum}: search bi chan/CAPTCHA hoac khong truy cap duoc, khong retry.")
+            LOG.info(f"  Bo qua cau {qnum}: search bi chan/CAPTCHA hoac khong truy cap duoc, khong retry.")
             return NO_DISCUSSION_BLOCKED
         if href is NO_DISCUSSION_MISSING:
-            print(f"  Bo qua cau {qnum}: ca DuckDuckGo va Google da search nhung khong co link dung cau, khong retry.")
+            LOG.info(f"  Bo qua cau {qnum}: ca DuckDuckGo va Google da search nhung khong co link dung cau, khong retry.")
             return NO_DISCUSSION_MISSING
-        print(f"  Tim thay: {href}")
+        LOG.info(f"  Tim thay: {href}")
 
         # 3. Mo tab va nap noi dung. Uu tien nap tuc thi qua HTTP (1s thay vi cho 15s quang cao),
         #    neu loi thi tu dong fallback sang dieu huong browser thong thuong.
-        print("  Dang mo tab va nap noi dung...")
+        LOG.info("  Dang mo tab va nap noi dung...")
         try:
             new_tab = page.context.new_page()
         except Exception as e:
-            print(f"  Loi mo tab: {e}")
+            LOG.warning(f"  Loi mo tab: {e}")
             new_tab = None
 
         loaded = False
         if new_tab:
             loaded = load_discussion_via_http(new_tab, href)
             if loaded:
-                print("  Da nap noi dung tuc thi qua HTTP (~1s)")
+                LOG.info("  Da nap noi dung tuc thi qua HTTP (~1s)")
             else:
-                print("  HTTP load khong thanh cong, thu dieu huong truc tiep trong browser...")
+                LOG.info("  HTTP load khong thanh cong, thu dieu huong truc tiep trong browser...")
                 if safe_goto(new_tab, href, timeout=15000):
                     loaded = wait_for_discussion(new_tab, timeout=15000)
 
         if not new_tab:
-            print("  Khong mo duoc tab discussion")
+            LOG.warning("  Khong mo duoc tab discussion")
             return None
         if not loaded:
-            print("  Van khong tai duoc noi dung discussion, thu boc du lieu du co...")
+            LOG.info("  Van khong tai duoc noi dung discussion, thu boc du lieu du co...")
         time.sleep(1)
 
         # 4 & 5. Xoa overlay va boc tach toan bo noi dung trong 1 lan evaluate duy nhat
-        print("  Dang lay noi dung...")
+        LOG.info("  Dang lay noi dung...")
         extracted_data = {}
         try:
             extracted_data = new_tab.evaluate(r"""
@@ -491,7 +492,7 @@ def crawl_one_question(page, exam_code, topic, qnum):
                 }
             """)
         except Exception as e:
-            print(f"  Loi lay noi dung: {e}")
+            LOG.warning(f"  Loi lay noi dung: {e}")
             extracted_data = {}
 
         if not isinstance(extracted_data, dict):
@@ -510,7 +511,7 @@ def crawl_one_question(page, exam_code, topic, qnum):
             url = href
 
         if not question:
-            print(f"  Khong lay duoc cau hoi cho cau {qnum}")
+            LOG.warning(f"  Khong lay duoc cau hoi cho cau {qnum}")
             return None
 
         clean_q = question
@@ -540,16 +541,16 @@ def crawl_one_question(page, exam_code, topic, qnum):
         clean_community_most_voted = list(dict.fromkeys(raw_most_voted))
         community_votes = extracted_data.get("community_votes") or []
 
-        print(f"  Cau hoi: {clean_q[:100]}...")
+        LOG.info(f"  Cau hoi: {clean_q[:100]}...")
         if clean_q_images:
-            print(f"  So hinh trong de bai: {len(clean_q_images)}")
+            LOG.info(f"  So hinh trong de bai: {len(clean_q_images)}")
         info_str = f"  So lua chon: {len(clean_options)}"
         if suggested_answers:
             info_str += f" (dap an goi y: {', '.join(suggested_answers)})"
         if clean_community_most_voted:
             info_str += f" [Cong dong: {', '.join(clean_community_most_voted)}]"
-        print(info_str)
-        print(f"  So binh luan: {len(clean_ans)}")
+        LOG.info(info_str)
+        LOG.info(f"  So binh luan: {len(clean_ans)}")
 
         return {
             "exam_code": exam_code,
@@ -565,7 +566,7 @@ def crawl_one_question(page, exam_code, topic, qnum):
             "url": url
         }
     except Exception as e:
-        print(f"  Loi: {e}")
+        LOG.warning(f"  Loi: {e}")
         return None
     finally:
         # Sau moi cau: dong het tab tru tab DuckDuckGo chinh (`page`).

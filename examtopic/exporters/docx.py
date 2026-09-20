@@ -7,7 +7,7 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from PIL import Image as PILImage
 
-from ..config import _preload_images, _fetch_image
+from ..config import LOG, _preload_images, _fetch_image
 from ..parser import as_int
 
 # Bang mau dung chung (dong bo voi HTML: xanh la dam cho dap an dung).
@@ -263,20 +263,20 @@ def convert_to_docx(json_path, hide_answers=False):
     doc.add_page_break()
 
     total_q = len(questions)
-    print(f"  Dang tao tai lieu Word ({total_q} cau)...")
+    LOG.info(f"  Dang tao tai lieu Word ({total_q} cau)...")
     step = max(50, total_q // 10)
     for i, q in enumerate(questions, 1):
         _add_question_docx(doc, q, q.get("question_num", i),
                            show_topic=show_topic, hide_answers=hide_answers)
         if i % step == 0 or i == total_q:
-            print(f"    Ghi noi dung: {i}/{total_q} cau")
+            LOG.info(f"    Ghi noi dung: {i}/{total_q} cau")
 
     _add_answer_key_table(doc, questions)
 
     out_path = os.path.splitext(json_path)[0] + ".docx"
-    print("  Dang luu file DOCX vao dia...")
+    LOG.info("  Dang luu file DOCX vao dia...")
     doc.save(out_path)
-    print(f"DOCX: {out_path}")
+    LOG.info(f"DOCX: {out_path}")
     return out_path
 
 

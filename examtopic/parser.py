@@ -5,6 +5,7 @@ import html
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 from .config import (
+    LOG,
     _HARVESTED_LINKS,
     OUTPUT_DIR,
     SEARCH_BLOCKED,
@@ -139,7 +140,7 @@ def extract_matching_link(page, exam_code, topic, qnum):
     try:
         links = page.query_selector_all('a[href]')
     except Exception as e:
-        print(f"  Loi liet ke link: {e}")
+        LOG.warning(f"  Loi liet ke link: {e}")
         links = []
     try:
         base_url = page.url
@@ -194,11 +195,11 @@ def _quarantine_corrupt_file(filepath, reason):
     backup = f"{filepath}.corrupt-{stamp}"
     try:
         os.replace(filepath, backup)
-        print(f"  [!] File cu bi loi ({reason}). Da giu lai ban goc tai: {backup}")
-        print("      Bat dau lai tu dau, nhung du lieu cu KHONG bi mat.")
+        LOG.warning(f"  [!] File cu bi loi ({reason}). Da giu lai ban goc tai: {backup}")
+        LOG.warning("      Bat dau lai tu dau, nhung du lieu cu KHONG bi mat.")
     except OSError as e:
-        print(f"  [!] File cu bi loi ({reason}) va khong the doi ten ({e}).")
-        print("      DUNG LAI de tranh ghi de mat du lieu. Hay sao luu file roi chay lai.")
+        LOG.error(f"  [!] File cu bi loi ({reason}) va khong the doi ten ({e}).")
+        LOG.error("      DUNG LAI de tranh ghi de mat du lieu. Hay sao luu file roi chay lai.")
         raise SystemExit(1)
 
 
@@ -267,14 +268,14 @@ def save_progress(data, filename):
         os.replace(temp_path, filepath)
         return True
     except Exception as e:
-        print(f"  Loi JSON: {e}, thu fallback...")
+        LOG.warning(f"  Loi JSON: {e}, thu fallback...")
         try:
             payload = json.dumps(data, ensure_ascii=True, indent=2)
             _write_json_durable(temp_path, payload)
             os.replace(temp_path, filepath)
             return True
         except Exception as e2:
-            print(f"  Fallback JSON that bai: {e2}")
+            LOG.error(f"  Fallback JSON that bai: {e2}")
             if os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)

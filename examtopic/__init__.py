@@ -6,6 +6,8 @@ voi tool.py va bat ky script nguoi dung nao). `__all__` duoi cuoi file khai
 bao tuong minh danh sach re-export nay, nen day khong phai import thua.
 """
 from .config import (
+    LOG,
+    configure_logging,
     MIN_DELAY,
     MAX_DELAY,
     RETRY_LIMIT,
@@ -72,6 +74,7 @@ from .exporters import (
 __all__ = [
     "__version__",
     # config
+    "LOG", "configure_logging",
     "MIN_DELAY", "MAX_DELAY", "RETRY_LIMIT", "BLOCKED_ABORT_STREAK",
     "OUTPUT_DIR", "DEFAULT_OP_TIMEOUT",
     "NO_DISCUSSION_BLOCKED", "NO_DISCUSSION_MISSING",
