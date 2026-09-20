@@ -1,9 +1,37 @@
 import os
 import json
 import base64
+from urllib.parse import urlparse
 
-from ..config import _preload_images, _fetch_image_bytes
+from ..config import LOG, _preload_images, _fetch_image_bytes
 from ..parser import escape_html, as_int
+
+# Chi cho phep cac scheme an toan khi render thanh href/src trong HTML xuat ra.
+# `javascript:`, `data:text/html`, `vbscript:`... co the thuc thi khi nguoi dung
+# click -> stored XSS neu file JSON dau vao khong dang tin (vd convert file nhan
+# tu nguoi khac). Pipeline crawl binh thuong da chan qua
+# is_examtopics_discussion_url(), nhung lop chan nay bao ve ca duong convert-only.
+_SAFE_URL_SCHEMES = ("http", "https")
+
+
+def _safe_url(url):
+    """Tra ve URL neu scheme an toan, nguoc lai tra ve chuoi rong.
+
+    URL tuong doi (khong co scheme) cung bi loai: trong ngu canh nay moi link
+    nguon deu la URL tuyet doi tu examtopics.
+    """
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    try:
+        scheme = urlparse(raw).scheme.lower()
+    except Exception:
+        return ""
+    if scheme in _SAFE_URL_SCHEMES:
+        return raw
+    LOG.warning(f"  Bo qua URL scheme khong an toan: {raw[:80]}")
+    return ""
+
 
 def build_html(questions, exam_code, embed_images=True):
     questions = sorted(questions, key=lambda q: (as_int(q.get("topic"), 1) or 1, as_int(q.get("question_num"), 0)))
@@ -13,10 +41,17 @@ def build_html(questions, exam_code, embed_images=True):
         _preload_images(questions)
 
     def _url_to_src(url):
-        """Tra ve src cho <img>: base64 data URI neu embed_images=True, URL neu False."""
+        """Tra ve src cho <img>: base64 data URI neu embed_images=True, URL neu False.
+
+        URL khong an toan (vd `javascript:`) bi loc ve chuoi rong truoc khi
+        render, ke ca khi khong embed anh.
+        """
+        safe = _safe_url(url)
+        if not safe:
+            return ""
         if not embed_images:
-            return str(url or '')
-        data = _fetch_image_bytes(url)
+            return safe
+        data = _fetch_image_bytes(safe)
         if data:
             b64 = base64.b64encode(data).decode("ascii")
             if data.startswith(b"\x89PNG"):
@@ -26,7 +61,7 @@ def build_html(questions, exam_code, embed_images=True):
             if data.startswith(b"GIF8"):
                 return f"data:image/gif;base64,{b64}"
             return f"data:image/png;base64,{b64}"
-        return str(url or '')
+        return safe
 
     parts = []
     if embed_images:
@@ -438,9 +473,10 @@ body:not(.answers-hidden) .answer-reveal { display: none; }
             error_html = f'<div class="error-tag">Data error: {escape_html(question["error"])}</div>'
 
         source_html = ""
-        if question.get("url"):
+        safe_source = _safe_url(question.get("url"))
+        if safe_source:
             source_html = (
-                f'<a class="source-link" href="{escape_html(question["url"])}" target="_blank" '
+                f'<a class="source-link" href="{escape_html(safe_source)}" target="_blank" '
                 'rel="noopener noreferrer">Open source page</a>'
             )
 
@@ -821,5 +857,5 @@ def convert_to_html(json_path, embed_images=True):
     out_path = os.path.splitext(json_path)[0] + ".html"
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"HTML: {out_path}")
+    LOG.info(f"HTML: {out_path}")
     return out_path
