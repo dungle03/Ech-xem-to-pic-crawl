@@ -95,7 +95,24 @@ python3 tool.py -e az-104 -t 1 -r 1-50 --headless -y
 
 # Ẩn đáp án trong file DOCX để tự luyện (đáp án chỉ còn ở bảng Answer Key)
 python3 tool.py --convert-only output/sk0005_questions.json --hide-answers
+
+# Chỉ in cảnh báo/lỗi, tắt tiến độ (hợp với CI hoặc khi ghi log ra file)
+python3 tool.py -e az-104 -r 1-100 -y --quiet
+
+# In thêm chi tiết chẩn đoán (retry, cache, tiến độ tải ảnh...) để debug
+python3 tool.py -e az-104 -r 1-10 --verbose
 ```
+
+### Mức độ log
+
+| Flag | Mức | Hiển thị |
+|---|---|---|
+| (mặc định) | INFO | Tiến độ + cảnh báo + lỗi, **giữ nguyên như trước** |
+| `-q`, `--quiet` | WARNING | Chỉ cảnh báo và lỗi |
+| `-v`, `--verbose` | DEBUG | Thêm chi tiết chẩn đoán |
+
+Output mặc định không đổi so với các phiên bản trước; `--quiet`/`--verbose` chỉ để tinh chỉnh khi cần.
+Hai flag loại trừ nhau (dùng cùng lúc sẽ báo lỗi).
 
 ## Cách hoạt động
 
@@ -146,7 +163,7 @@ Ghi chú:
   * `crawler.py`: Điều phối tìm kiếm, nạp discussion, đồng bộ session và bóc dữ liệu.
   * `exporters/`: Dựng HTML ôn tập/thi thử (`html.py`) và Word kèm Answer Key (`docx.py`).
 * `tool.py`: CLI entrypoint điều phối chính, re-export 100% tương thích ngược.
-* `test_tool.py`: Bộ 65 unit tests tự động kiểm thử toàn bộ luồng xử lý.
+* `test_tool.py`: Bộ unit tests tự động kiểm thử toàn bộ luồng xử lý (hiện có 81 test).
 
 ### Kiểm thử
 
@@ -167,12 +184,26 @@ python3 -m unittest test_tool.py
 
 ## Cấu hình
 
+Các giá trị dưới đây đọc từ **biến môi trường** khi khởi động, không cần sửa code:
+
 | Biến | Mô tả | Mặc định |
 |---|---|---|
 | `MIN_DELAY` | Nghỉ tối thiểu giữa các câu (giây) | 2 |
 | `MAX_DELAY` | Nghỉ tối đa giữa các câu (giây) | 5 |
 | `RETRY_LIMIT` | Số lần retry khi lỗi | 3 |
+| `BLOCKED_ABORT_STREAK` | Số câu bị chặn liên tiếp thì dừng phiên | 3 |
+| `RETRY_HTTP_ATTEMPTS` | Số lần thử lại HTTP khi gặp 429/503 | 2 |
+| `RETRY_HTTP_BACKOFF` | Backoff giữa các lần thử lại (giây) | 1 |
+| `DEFAULT_OP_TIMEOUT` | Timeout thao tác trình duyệt (ms) | 30000 |
 | `OUTPUT_DIR` | Thư mục lưu kết quả | `output` |
+
+Ví dụ — crawl chậm và thận trọng hơn để né rate-limit:
+
+```bash
+MIN_DELAY=6 MAX_DELAY=12 RETRY_LIMIT=5 python3 tool.py -e az-104 -r 1-100 -y
+```
+
+Giá trị thiếu hoặc không hợp lệ sẽ tự động rơi về mặc định (không làm crash tool).
 
 ## License
 

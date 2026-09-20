@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import shutil
@@ -731,6 +732,201 @@ class TestDocxFormatting(unittest.TestCase):
         table = doc.tables[0]
         cell_texts = [c.text for row in table.rows for c in row.cells]
         self.assertIn("A", cell_texts)
+
+
+class TestLoggingLevels(unittest.TestCase):
+    """A1: logging phai giu nguyen output mac dinh, chi LOC khi --quiet va
+    hien them khi --verbose. Day la diem Jev danh dau rui ro nhat, nen test
+    kiem tra hanh vi quan sat duoc tren stream that.
+    """
+
+    def setUp(self):
+        import examtopic.config as C
+        self.C = C
+        self.saved_level = C.LOG.level
+
+    def tearDown(self):
+        self.C.configure_logging()
+
+    def _capture(self, **kwargs):
+        stream = io.StringIO()
+        self.C.configure_logging(stream=stream, **kwargs)
+        self.C.LOG.info("INFO-marker")
+        self.C.LOG.warning("WARNING-marker")
+        self.C.LOG.debug("DEBUG-marker")
+        return stream.getvalue()
+
+    def test_default_shows_info_not_debug(self):
+        out = self._capture()
+        self.assertIn("INFO-marker", out)
+        self.assertIn("WARNING-marker", out)
+        self.assertNotIn("DEBUG-marker", out)
+
+    def test_quiet_hides_info_keeps_warning(self):
+        out = self._capture(quiet=True)
+        self.assertNotIn("INFO-marker", out)
+        self.assertIn("WARNING-marker", out)
+        self.assertNotIn("DEBUG-marker", out)
+
+    def test_verbose_shows_debug(self):
+        out = self._capture(verbose=True)
+        self.assertIn("INFO-marker", out)
+        self.assertIn("DEBUG-marker", out)
+
+    def test_output_has_no_logging_decorations(self):
+        """Output phai la chuoi goc, KHONG co timestamp/level nhu logging mac dinh."""
+        out = self._capture()
+        self.assertNotIn("examtopic", out)
+        self.assertNotIn("INFO:", out)
+        self.assertNotIn("WARNING:", out)
+
+    def test_message_text_is_byte_identical_to_old_print(self):
+        """Bat bien quan trong nhat (Jev uoc tinh 0.61 kha nang pha vo): chuoi
+        ma nguoi dung nhin thay phai giong HET print() cu, chi khac newline cuoi
+        ma print() tu them. Neu ai do doi formatter lam hong dieu nay, test se bat.
+        """
+        message = "  Dang tai 3 anh (song song)..."
+        stream = io.StringIO()
+        self.C.configure_logging(stream=stream)
+        self.C.LOG.info(message)
+        # print(message) xuat ra dung `message + "\n"`.
+        self.assertEqual(stream.getvalue(), message + "\n")
+
+    def test_warning_and_error_have_no_prefix(self):
+        """Canh bao/loi cung khong duoc tu them tien to nhu 'WARNING:'."""
+        stream = io.StringIO()
+        self.C.configure_logging(stream=stream)
+        self.C.LOG.warning("  canh bao")
+        self.C.LOG.error("  loi")
+        self.assertEqual(stream.getvalue(), "  canh bao\n  loi\n")
+
+
+class TestEnvConfig(unittest.TestCase):
+    """A2: cac hang so phai doc duoc tu bien moi truong, va roi ve mac dinh
+    an toan khi gia tri thieu/rac. Chay trong tien trinh con vi config duoc
+    doc luc import.
+    """
+
+    def _read_config(self, env):
+        import subprocess
+        import sys as _sys
+        code = ("import examtopic.config as C;"
+                "print(C.MIN_DELAY, C.MAX_DELAY, C.RETRY_LIMIT, C.OUTPUT_DIR)")
+        proc = subprocess.run(
+            [_sys.executable, "-c", code],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            capture_output=True, text=True, env={**os.environ, **env},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return proc.stdout.split()
+
+    def test_defaults_when_no_env(self):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("MIN_DELAY", "MAX_DELAY", "RETRY_LIMIT", "OUTPUT_DIR")}
+        import subprocess, sys as _sys
+        code = ("import examtopic.config as C;"
+                "print(C.MIN_DELAY, C.MAX_DELAY, C.RETRY_LIMIT, C.OUTPUT_DIR)")
+        proc = subprocess.run([_sys.executable, "-c", code],
+                              cwd=os.path.dirname(os.path.abspath(__file__)),
+                              capture_output=True, text=True, env=env)
+        self.assertEqual(proc.stdout.split(), ["2", "5", "3", "output"])
+
+    def test_env_overrides_applied(self):
+        out = self._read_config({"MIN_DELAY": "7", "MAX_DELAY": "9",
+                                 "RETRY_LIMIT": "5", "OUTPUT_DIR": "/tmp/zz"})
+        self.assertEqual(out, ["7", "9", "5", "/tmp/zz"])
+
+    def test_garbage_env_falls_back_to_default(self):
+        out = self._read_config({"MIN_DELAY": "abc", "RETRY_LIMIT": "-3"})
+        self.assertEqual(out[0], "2", "MIN_DELAY rac phai ve mac dinh")
+        self.assertEqual(out[2], "3", "RETRY_LIMIT am phai ve mac dinh")
+
+
+class TestSafeUrl(unittest.TestCase):
+    """C2: chan scheme nguy hiem (javascript:, data:) truoc khi render href/src
+    trong HTML xuat ra, de convert file JSON khong dang tin khong gay stored XSS.
+    """
+
+    def setUp(self):
+        from examtopic.exporters.html import _safe_url
+        self.safe = _safe_url
+
+    def test_allows_http_and_https(self):
+        self.assertEqual(self.safe("https://www.examtopics.com/x"), "https://www.examtopics.com/x")
+        self.assertEqual(self.safe("http://a.com/i.png"), "http://a.com/i.png")
+        self.assertEqual(self.safe("HTTPS://OK.COM/x"), "HTTPS://OK.COM/x")
+
+    def test_blocks_dangerous_schemes(self):
+        for bad in ("javascript:alert(1)", "data:text/html,<script>alert(1)</script>",
+                    "vbscript:msgbox(1)", "file:///etc/passwd"):
+            self.assertEqual(self.safe(bad), "", f"phai chan: {bad}")
+
+    def test_rejects_empty_and_relative(self):
+        for bad in ("", None, "   ", "/relative/path", "no-scheme.com/x"):
+            self.assertEqual(self.safe(bad), "", f"phai loai: {bad!r}")
+
+    def test_build_html_drops_javascript_href(self):
+        from examtopic.exporters.html import build_html
+        qs = [{"exam_code": "x", "topic": 1, "question_num": 1, "question": "q",
+               "options": [], "suggested_answers": [], "answers": [],
+               "url": "javascript:alert(document.cookie)"}]
+        out = build_html(qs, "x", embed_images=False)
+        self.assertNotIn('href="javascript:', out)
+        self.assertNotIn('class="source-link"', out)
+
+    def test_build_html_keeps_legit_href(self):
+        from examtopic.exporters.html import build_html
+        url = "https://www.examtopics.com/discussions/x/"
+        qs = [{"exam_code": "x", "topic": 1, "question_num": 1, "question": "q",
+               "options": [], "suggested_answers": [], "answers": [], "url": url}]
+        out = build_html(qs, "x", embed_images=False)
+        self.assertIn(f'href="{url}"', out)
+
+
+class TestQuietVerboseCli(unittest.TestCase):
+    """A1: --quiet phai im lang voi convert thanh cong, nhung van in loi va
+    tra ma loi khi that bai.
+    """
+
+    def _run(self, args):
+        import subprocess
+        import sys as _sys
+        return subprocess.run(
+            [_sys.executable, "tool.py", *args],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            capture_output=True, text=True,
+        )
+
+    def _write_valid(self, tmp):
+        path = os.path.join(tmp, "x_questions.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump([{"exam_code": "X", "topic": 1, "question_num": 1, "question": "q",
+                        "options": [], "suggested_answers": [], "answers": []}], f)
+        return path
+
+    def test_quiet_success_is_silent(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            proc = self._run(["--quiet", "--convert-only", self._write_valid(tmp)])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout.strip(), "", "chap nhan --quiet phai khong in gi")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_quiet_still_reports_errors(self):
+        proc = self._run(["--quiet", "--convert-only", "/nonexistent/x.json"])
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("Loi", proc.stdout + proc.stderr)
+
+    def test_default_prints_conversion_paths(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            proc = self._run(["--convert-only", self._write_valid(tmp)])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("HTML:", proc.stdout)
+            self.assertIn("DOCX:", proc.stdout)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":
