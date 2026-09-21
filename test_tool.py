@@ -883,6 +883,55 @@ class TestSafeUrl(unittest.TestCase):
         self.assertIn(f'href="{url}"', out)
 
 
+class TestRecordTopicSafety(unittest.TestCase):
+    """`topic` khong phai int (dict/list/None/chuoi) tung lam crash converter voi
+    `TypeError: unhashable type: 'dict'` khi dua vao set(). Day la kieu du lieu
+    co that khi convert file JSON chinh sua tay hoac tu nguon khac.
+    """
+
+    def test_record_topic_normalizes_all_types(self):
+        from examtopic.parser import record_topic
+        self.assertEqual(record_topic({"topic": 3}), 3)
+        self.assertEqual(record_topic({"topic": "5"}), 5)
+        self.assertEqual(record_topic({"topic": {"a": 1}}), 1)
+        self.assertEqual(record_topic({"topic": [1, 2]}), 1)
+        self.assertEqual(record_topic({"topic": None}), 1)
+        self.assertEqual(record_topic({}), 1)
+        self.assertEqual(record_topic("not a dict"), 1)
+
+    def test_record_topic_result_is_hashable(self):
+        from examtopic.parser import record_topic
+        for bad in ({"a": 1}, [1, 2], None, "3", 3.7):
+            set([record_topic({"topic": bad})])  # khong duoc raise
+
+    def test_build_html_survives_unhashable_topic(self):
+        from examtopic.exporters.html import build_html
+        qs = [{"exam_code": "x", "topic": {"a": 1}, "question_num": 1, "question": "q",
+               "options": [], "suggested_answers": [], "answers": []}]
+        build_html(qs, "x", embed_images=False)  # truoc day crash tai day
+
+    def test_docx_answer_key_survives_unhashable_topic(self):
+        from docx import Document
+        from examtopic.exporters.docx import _add_answer_key_table
+        doc = Document()
+        _add_answer_key_table(doc, [{"topic": {"a": 1}, "question_num": 1, "question": "q",
+                                     "suggested_answers": ["A"]}])
+        self.assertEqual(len(doc.tables), 1)
+
+    def test_convert_survives_unhashable_topic(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp, "x_questions.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump([{"exam_code": "X", "topic": [1], "question_num": 1,
+                            "question": "q", "options": [], "suggested_answers": ["A"],
+                            "answers": []}], f)
+            convert_to_html(path)
+            convert_to_docx(path)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class TestQuietVerboseCli(unittest.TestCase):
     """A1: --quiet phai im lang voi convert thanh cong, nhung van in loi va
     tra ma loi khi that bai.

@@ -8,7 +8,7 @@ from docx.oxml import OxmlElement
 from PIL import Image as PILImage
 
 from ..config import LOG, _preload_images, _fetch_image
-from ..parser import as_int
+from ..parser import as_int, record_topic
 
 # Bang mau dung chung (dong bo voi HTML: xanh la dam cho dap an dung).
 COLOR_HEADING = RGBColor(0x16, 0x21, 0x3E)   # xanh dam
@@ -226,8 +226,8 @@ def convert_to_docx(json_path, hide_answers=False):
     if not questions:
         raise ValueError("Khong co cau hoi hop le trong file.")
 
-    questions = sorted(questions, key=lambda q: (as_int(q.get("topic"), 1) or 1, as_int(q.get("question_num"), 0)))
-    show_topic = len(set(q.get("topic", 1) for q in questions)) > 1
+    questions = sorted(questions, key=lambda q: (record_topic(q), as_int(q.get("question_num"), 0)))
+    show_topic = len(set(record_topic(q) for q in questions)) > 1
 
     _preload_images(questions)
 
@@ -329,14 +329,14 @@ def _add_answer_key_table(doc, questions):
             _shade_paragraph(p, "EDEEF5")
 
     # Data
-    multiple_topics = len(set(x.get("topic", 1) for x in valid_q)) > 1
+    multiple_topics = len(set(record_topic(x) for x in valid_q)) > 1
     for i, q in enumerate(valid_q):
         row_idx = (i % rows_needed) + 1
         col_group = i // rows_needed
         col_q = col_group * 2
         col_a = col_group * 2 + 1
 
-        topic = q.get("topic")
+        topic = record_topic(q)
         qnum = q.get("question_num", i + 1)
         q_label = f"T{topic}#{qnum}" if (multiple_topics and topic) else f"#{qnum}"
 

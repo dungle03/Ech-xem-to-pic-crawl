@@ -4,7 +4,7 @@ import base64
 from urllib.parse import urlparse
 
 from ..config import LOG, _preload_images, _fetch_image_bytes
-from ..parser import escape_html, as_int
+from ..parser import escape_html, as_int, record_topic
 
 # Chi cho phep cac scheme an toan khi render thanh href/src trong HTML xuat ra.
 # `javascript:`, `data:text/html`, `vbscript:`... co the thuc thi khi nguoi dung
@@ -34,8 +34,8 @@ def _safe_url(url):
 
 
 def build_html(questions, exam_code, embed_images=True):
-    questions = sorted(questions, key=lambda q: (as_int(q.get("topic"), 1) or 1, as_int(q.get("question_num"), 0)))
-    multiple_topics = len(set(q.get("topic", 1) for q in questions)) > 1
+    questions = sorted(questions, key=lambda q: (record_topic(q), as_int(q.get("question_num"), 0)))
+    multiple_topics = len(set(record_topic(q) for q in questions)) > 1
 
     if embed_images:
         _preload_images(questions)
@@ -88,7 +88,7 @@ def build_html(questions, exam_code, embed_images=True):
     nav_items = []
     for index, question in enumerate(questions, 1):
         number = question.get("question_num", index)
-        topic_num = question.get("topic", 1)
+        topic_num = record_topic(question)
         question_key = f"{topic_num}:{number}"
         nav_label = f"T{topic_num} #{number}" if multiple_topics else str(number)
         nav_items.append(
@@ -484,7 +484,7 @@ body:not(.answers-hidden) .answer-reveal { display: none; }
 <article class="question-card" id="q-{index}" data-study-question data-key="{escape_html(question_key)}" data-search="{escape_html(raw_search)}">
 <header class="q-head">
 <div class="q-meta">
-{f'<span class="topic-chip">Topic {escape_html(question.get("topic", 1))}</span>' if multiple_topics else ''}
+{f'<span class="topic-chip">Topic {escape_html(record_topic(question))}</span>' if multiple_topics else ''}
 <span class="q-num">Question {escape_html(number)}</span>
 <span class="answer-chip"><span class="answer-prefix">Answer: </span><span class="answer-value">{escape_html(answer_text)}</span></span>
 {f'<span class="topic-chip" style="background:#e8f5e9;color:#2e7d32;border-color:#c8e6c9" title="Community Most Voted">Most Voted: {escape_html(", ".join(str(s) for s in question.get("community_most_voted")))}</span>' if question.get("community_most_voted") and set(str(s) for s in question.get("community_most_voted", [])) != set(str(s) for s in question.get("suggested_answers", [])) else ''}
@@ -851,7 +851,7 @@ def convert_to_html(json_path, embed_images=True):
     questions = [q for q in data if isinstance(q, dict) and q.get("question")]
     if not questions:
         raise ValueError("Khong co cau hoi hop le trong file.")
-    questions = sorted(questions, key=lambda q: (as_int(q.get("topic"), 1) or 1, as_int(q.get("question_num"), 0)))
+    questions = sorted(questions, key=lambda q: (record_topic(q), as_int(q.get("question_num"), 0)))
     exam_code = questions[0].get("exam_code", "exam")
     html = build_html(questions, exam_code, embed_images=embed_images)
     out_path = os.path.splitext(json_path)[0] + ".html"

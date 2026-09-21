@@ -33,6 +33,7 @@ from .config import (
 from .parser import (
     escape_html,
     as_int,
+    record_topic,
     canonical_exam_code,
     normalize_exam_code,
     extract_discussion_info,
@@ -82,7 +83,7 @@ __all__ = [
     "_IMG_HEADERS", "_IMG_CACHE", "_SESSION_COOKIES", "_HARVESTED_LINKS", "_PROXY",
     "set_proxy", "_fetch_image_bytes", "_fetch_image", "_preload_images",
     # parser
-    "escape_html", "as_int", "canonical_exam_code", "normalize_exam_code",
+    "escape_html", "as_int", "record_topic", "canonical_exam_code", "normalize_exam_code",
     "extract_discussion_info", "link_matches_question", "is_examtopics_discussion_url",
     "unwrap_search_href", "extract_matching_link", "no_link_result",
     "parse_range", "load_all", "has_good_data", "upsert", "save_progress",

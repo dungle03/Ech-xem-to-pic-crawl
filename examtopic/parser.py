@@ -231,7 +231,19 @@ def _record_key(rec):
     """Khoa sap xep (topic, question_num) an toan voi moi kieu du lieu."""
     if not isinstance(rec, dict):
         return (0, 0)
-    return (as_int(rec.get("topic"), 1) or 1, as_int(rec.get("question_num"), 0))
+    return (record_topic(rec), as_int(rec.get("question_num"), 0))
+
+def record_topic(rec):
+    """Tra ve `topic` da chuan hoa ve int, an toan voi moi kieu du lieu.
+
+    `topic` co the la int (binh thuong), chuoi so (du lieu cu / extract tay),
+    hoac gia tri rac nhu dict/list. Dung truc tiep lam phan tu `set()` se crash
+    voi `TypeError: unhashable type: 'dict'`; dua vao sorting thi so sanh dict
+    voi int cung loi. Chuan hoa qua as_int truoc khi dung o bat ky dau.
+    """
+    if not isinstance(rec, dict):
+        return 1
+    return as_int(rec.get("topic"), 1) or 1
 
 def upsert(all_data, record):
     if not isinstance(record, dict):
