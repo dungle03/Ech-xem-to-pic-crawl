@@ -141,6 +141,10 @@ _RE_SCRIPT = re.compile(
     re.S | re.I,
 )
 _RE_IFRAME = re.compile(r'<iframe\b[^>]*>.*?</iframe>', re.S | re.I)
+# Endpoint tra ve fragment HTML chua TOAN BO binh luan cua mot discussion.
+# Trang discussion chi render san ~20-25 binh luan dau; phan con lai nam sau
+# nut "Load full discussion..." va chi lay duoc qua AJAX nay.
+LOAD_COMPLETE_URL = "https://www.examtopics.com/ajax/discussion/load-complete/"
 _RE_EXAMTOPICS_URL = re.compile(r'https?://(?:www\.)?examtopics\.com/[^\s&"\'<>]+', re.I)
 _RE_DISCUSSION_SLUG = re.compile(
     r'exam-(?P<code>.+?)-topic-(?P<topic>\d+)-question-(?P<qnum>\d+)-discussion',

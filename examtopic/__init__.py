@@ -57,6 +57,7 @@ from .crawler import (
     close_extra_tabs,
     wait_for_discussion,
     load_discussion_via_http,
+    load_full_comments,
     sync_browser_session,
     crawl_one_question,
 )
@@ -90,7 +91,7 @@ __all__ = [
     # crawler
     "safe_close", "safe_goto", "warmup_search", "search_engine",
     "find_discussion_link", "close_extra_tabs", "wait_for_discussion",
-    "load_discussion_via_http", "sync_browser_session", "crawl_one_question",
+    "load_discussion_via_http", "load_full_comments", "sync_browser_session", "crawl_one_question",
     # exporters
     "build_html", "convert_to_html", "convert_to_docx",
     "_add_picture_fitted", "_add_question_docx", "_add_answer_key_table", "_set_default_font",

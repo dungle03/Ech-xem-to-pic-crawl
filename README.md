@@ -17,6 +17,7 @@ Tự động thu thập câu hỏi từ ExamTopics, lưu kết quả dưới d�
 * Trang HTML có hai chế độ: ôn tập chủ động (tìm kiếm, che/mở đáp án, đánh dấu câu cần ôn) và thi thử có hẹn giờ/chấm điểm.
 * Tải ảnh song song khi convert DOCX (10 luồng).
 * Nạp nội dung thảo luận siêu tốc qua HTTP-first (~1s thay vì 15s chờ tải quảng cáo/tracker).
+* Nạp **đầy đủ bình luận**: trang ExamTopics chỉ render sẵn ~20-25 bình luận đầu, phần còn lại nằm sau nút "Load full discussion..." — tool tự gọi AJAX để lấy hết thay vì cắt cụt thảo luận.
 * Cơ chế Opportunistic Link Harvester: tự động gom và nhớ các link discussion xuất hiện trên trang tìm kiếm để tái sử dụng, bỏ qua tìm kiếm khi đã có sẵn link.
 * Hỗ trợ tham số `--proxy` (HTTP/SOCKS5) bảo vệ IP và hỗ trợ crawl quy mô lớn.
 * Fallback tải trang qua HTTP khi trình duyệt load trang discussion bị treo.
@@ -121,6 +122,7 @@ Với mỗi câu hỏi, tool vận hành theo luồng tối ưu:
 1. **Kiểm tra bộ nhớ đệm (Link Cache)**: Nếu câu hỏi đã có link trong cache (từ file JSON cũ hoặc được thu thập từ các lần tìm kiếm trước), tool dùng ngay mà không cần tìm kiếm.
 2. **Tìm kiếm thông minh**: Nếu chưa có trong cache, tool gõ query vào DuckDuckGo (kèm `site:examtopics.com`). Trong quá trình này, tool tự động gom tất cả các link câu hỏi khác xuất hiện trên trang tìm kiếm để dùng lại cho các câu sau. Nếu DuckDuckGo không ra link khớp, tự chuyển sang Google.
 3. **Nạp nội dung siêu tốc (Fast HTTP-first)**: Dùng `httpx` nạp trực tiếp mã nguồn HTML đã bypass Cloudflare vào tab (~1s) thay vì chờ 15s tải quảng cáo/tracker; tự động fallback sang điều hướng thông thường trong trình duyệt nếu HTTP gặp lỗi.
+4. **Nạp đầy đủ bình luận**: ExamTopics chỉ render sẵn ~20-25 bình luận đầu và giấu phần còn lại sau nút "Load full discussion...". Tool gọi AJAX `load-complete` để thay khối bình luận bằng bản đầy đủ trước khi bóc dữ liệu. Nếu trang không có nút (nghĩa là đã đầy đủ) thì bỏ qua, không tốn request. Bước này chỉ thay `.outer-discussion-container` — đề bài, lựa chọn, đáp án và bảng vote nằm ngoài container đó nên không bị ảnh hưởng; nếu AJAX lỗi thì DOM giữ nguyên.
 
 ## Kết quả
 
@@ -163,7 +165,7 @@ Ghi chú:
   * `crawler.py`: Điều phối tìm kiếm, nạp discussion, đồng bộ session và bóc dữ liệu.
   * `exporters/`: Dựng HTML ôn tập/thi thử (`html.py`) và Word kèm Answer Key (`docx.py`).
 * `tool.py`: CLI entrypoint điều phối chính, re-export 100% tương thích ngược.
-* `test_tool.py`: Bộ unit tests tự động kiểm thử toàn bộ luồng xử lý (hiện có 81 test).
+* `test_tool.py`: Bộ unit tests tự động kiểm thử toàn bộ luồng xử lý (hiện có 96 test).
 
 ### Kiểm thử
 

@@ -401,6 +401,133 @@ class TestProxyConfiguration(unittest.TestCase):
         self.assertIsNone(mock_get.call_args.kwargs.get("proxy"))
 
 
+class TestLoadFullComments(unittest.TestCase):
+    """Trang discussion chi render san ~20-25 binh luan dau; phan con lai nam
+    sau nut "Load full discussion..." va chi lay duoc qua AJAX load-complete.
+
+    Truoc ban va nay crawler khong bao gio goi buoc nay -> cac cau soi noi bi
+    cat cut. Do tren du lieu that: 10/17 cau co >=20 binh luan bi mat trung
+    binh ~30-50% noi dung (co cau hien 20/78 binh luan).
+
+    Cac test duoi day khoa HANH VI: co goi AJAX khi co nut, KHONG goi khi
+    khong co nut, va khong lam hong du lieu khac khi AJAX loi.
+    """
+
+    def _tab(self, has_button=True, did="56676", comments=20):
+        """Tab gia: co/khong nut load-full-discussion, tra ve discussion-id."""
+        tab = MagicMock()
+
+        def query_selector(sel):
+            if sel == '.load-full-discussion-button':
+                return MagicMock() if has_button else None
+            return MagicMock()
+
+        tab.query_selector.side_effect = query_selector
+        # evaluate() dau tien la _extract_discussion_id -> tra data-discussion-id.
+        # evaluate() sau do la buoc bom fragment -> tra True (bom thanh cong).
+        tab.evaluate.side_effect = [did, True]
+        # _count_comments truoc/sau khi bom.
+        tab.eval_on_selector_all.return_value = comments
+        return tab
+
+    def test_skips_ajax_when_no_load_button(self):
+        """Khong co nut => trang da day du, khong ton request nao."""
+        from examtopic.crawler import load_full_comments
+        tab = self._tab(has_button=False)
+        with patch("examtopic.crawler.httpx.get") as mock_get:
+            result = load_full_comments(tab, "https://x.test/view/56676-exam-a-topic-1-question-1-discussion/")
+        self.assertIsNone(result)
+        mock_get.assert_not_called()
+
+    def test_calls_ajax_when_load_button_present(self):
+        """Co nut => phai goi AJAX load-complete voi dung discussion-id."""
+        from examtopic.crawler import load_full_comments
+        tab = self._tab(has_button=True, did="56676")
+        resp = MagicMock(status_code=200, text=(
+            '<div class="outer-discussion-container">'
+            '<div class="comment-content">a</div></div>'
+        ))
+        with patch("examtopic.crawler.httpx.get", return_value=resp) as mock_get:
+            load_full_comments(tab, "https://x.test/view/56676-exam-a-topic-1-question-1-discussion/")
+        self.assertEqual(mock_get.call_count, 1)
+        self.assertEqual(mock_get.call_args.kwargs.get("params"), {"discussion-id": "56676"})
+
+    def test_ajax_failure_keeps_existing_dom(self):
+        """AJAX loi => tra None va KHONG bom gi vao DOM (khong mat du lieu cu)."""
+        from examtopic.crawler import load_full_comments
+        tab = self._tab(has_button=True)
+        resp = MagicMock(status_code=500, text="")
+        with patch("examtopic.crawler.httpx.get", return_value=resp):
+            result = load_full_comments(tab, "https://x.test/view/56676-exam-a-topic-1-question-1-discussion/")
+        self.assertIsNone(result)
+        # evaluate chi duoc goi 1 lan (doc discussion-id), khong bom fragment.
+        self.assertEqual(tab.evaluate.call_count, 1)
+
+    def test_fragment_without_container_is_rejected(self):
+        """Fragment khong co .outer-discussion-container => coi nhu that bai."""
+        from examtopic.crawler import load_full_comments
+        tab = self._tab(has_button=True)
+        tab.evaluate.side_effect = ["56676", False]
+        resp = MagicMock(status_code=200, text="<div>khong co container</div>")
+        with patch("examtopic.crawler.httpx.get", return_value=resp):
+            result = load_full_comments(tab, "https://x.test/view/56676-exam-a-topic-1-question-1-discussion/")
+        self.assertIsNone(result)
+
+    def test_derives_discussion_id_from_url_when_dom_lacks_it(self):
+        """DOM khong co data-discussion-id => rot ve id trong slug URL."""
+        from examtopic.crawler import load_full_comments
+        tab = MagicMock()
+        tab.query_selector.return_value = MagicMock()
+        tab.evaluate.side_effect = [None, True]
+        tab.eval_on_selector_all.return_value = 5
+        resp = MagicMock(status_code=200, text='<div class="outer-discussion-container"></div>')
+        with patch("examtopic.crawler.httpx.get", return_value=resp) as mock_get:
+            load_full_comments(tab, "https://www.examtopics.com/discussions/ms/view/56676-exam-ms-700-topic-1-question-21-discussion/")
+        self.assertEqual(mock_get.call_args.kwargs.get("params"), {"discussion-id": "56676"})
+
+    def test_uses_proxy_set_after_import(self):
+        """Proxy set sau khi import van phai ap dung (cung loi nhu HTTP fallback)."""
+        from examtopic.crawler import load_full_comments
+        set_proxy("http://127.0.0.1:6666")
+        try:
+            tab = self._tab(has_button=True)
+            resp = MagicMock(status_code=200, text='<div class="outer-discussion-container"></div>')
+            with patch("examtopic.crawler.httpx.get", return_value=resp) as mock_get:
+                load_full_comments(tab, "https://x.test/view/56676-exam-a-topic-1-question-1-discussion/")
+            self.assertEqual(mock_get.call_args.kwargs.get("proxy"), "http://127.0.0.1:6666")
+        finally:
+            set_proxy(None)
+
+    def test_returns_before_and_after_counts(self):
+        """Tra ve (truoc, sau) de log chung minh da nap them binh luan."""
+        from examtopic.crawler import load_full_comments
+        tab = MagicMock()
+        tab.query_selector.return_value = MagicMock()
+        tab.evaluate.side_effect = ["56676", True]
+        tab.eval_on_selector_all.side_effect = [20, 70]
+        resp = MagicMock(status_code=200, text='<div class="outer-discussion-container"></div>')
+        with patch("examtopic.crawler.httpx.get", return_value=resp):
+            result = load_full_comments(tab, "https://x.test/view/56676-exam-a-topic-1-question-1-discussion/")
+        self.assertEqual(result, (20, 70))
+
+    def test_strips_scripts_from_fragment(self):
+        """Fragment phai duoc loc script truoc khi bom vao DOM."""
+        from examtopic.crawler import load_full_comments
+        tab = MagicMock()
+        tab.query_selector.return_value = MagicMock()
+        tab.evaluate.side_effect = ["56676", True]
+        tab.eval_on_selector_all.return_value = 5
+        resp = MagicMock(status_code=200, text=(
+            '<div class="outer-discussion-container"></div>'
+            '<script>alert(1)</script>'
+        ))
+        with patch("examtopic.crawler.httpx.get", return_value=resp):
+            load_full_comments(tab, "https://x.test/view/56676-exam-a-topic-1-question-1-discussion/")
+        bommed = tab.evaluate.call_args.args[1]
+        self.assertNotIn("<script>alert(1)</script>", bommed)
+        self.assertIn("outer-discussion-container", bommed)
+
+
 class TestScriptTagPreservation(unittest.TestCase):
     """_RE_SCRIPT phai GIU lai <script type="application/json"> (nguon du lieu
     community_most_voted) va STRIP cac script khac. Bien the co khoang trang

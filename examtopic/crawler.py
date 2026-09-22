@@ -1,3 +1,4 @@
+import re
 import time
 import random
 import httpx
@@ -10,6 +11,7 @@ from .config import (
     RETRY_HTTP_ATTEMPTS,
     RETRY_HTTP_BACKOFF,
     SEARCH_ENGINES,
+    LOAD_COMPLETE_URL,
     SEARCH_OK,
     SEARCH_EMPTY,
     SEARCH_BLOCKED,
@@ -327,6 +329,113 @@ def load_discussion_via_http(tab, href, timeout=20):
         return False
     return tab.query_selector('.discussion-header-container') is not None
 
+def _extract_discussion_id(tab, href):
+    """Lay discussion-id de goi AJAX load-complete.
+
+    Uu tien `data-discussion-id` trong DOM vi do la nguon chinh thuc trang dung.
+    Neu DOM khong co (hien thi la), rot ve id nam trong slug URL dang
+    `/view/<id>-exam-...`. Tra ve None neu khong xac dinh duoc.
+    """
+    try:
+        did = tab.evaluate(
+            "() => { const el = document.querySelector('[data-discussion-id]');"
+            " return el ? el.getAttribute('data-discussion-id') : null; }"
+        )
+        if did and str(did).strip().isdigit():
+            return str(did).strip()
+    except Exception:
+        pass
+    try:
+        match = re.search(r'/view/(\d+)', str(href))
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
+    return None
+
+def load_full_comments(tab, href):
+    """Nap TOAN BO binh luan cua discussion vao DOM hien tai.
+
+    Trang discussion cua ExamTopics chi render san ~20-25 binh luan dau; phan
+    con lai nam sau nut "Load full discussion..." va chi lay duoc qua AJAX
+    `load-complete`. Neu khong goi buoc nay, cac cau soi noi bi cat cut: do
+    duoc 10/17 cau co >=20 binh luan bi mat trung binh ~30-50% noi dung.
+
+    Fragment AJAX tra ve chua `.outer-discussion-container` (chi gom phan binh
+    luan). De bai, lua chon, dap an va bang vote nam NGOAI container nay nen
+    thay the no khong lam mat du lieu nao khac.
+
+    Tra ve so binh luan truoc/sau khi nap, hoac None neu khong nap duoc.
+    """
+    before = _count_comments(tab)
+    # Khong co nut => trang da day du, khong ton request nao.
+    try:
+        if not tab.query_selector('.load-full-discussion-button'):
+            return None
+    except Exception:
+        return None
+
+    did = _extract_discussion_id(tab, href)
+    if not did:
+        LOG.info("  Khong xac dinh duoc discussion-id, bo qua nap binh luan day du.")
+        return None
+
+    ua = _IMG_HEADERS.get("User-Agent") or ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+    # Doc `config._PROXY` tai thoi diem goi (khong import truc tiep) de proxy
+    # set sau khi import van duoc ap dung, giong load_discussion_via_http.
+    proxy = config._PROXY
+    try:
+        resp = httpx.get(
+            LOAD_COMPLETE_URL,
+            params={"discussion-id": did},
+            headers={"User-Agent": ua},
+            cookies=_SESSION_COOKIES or None,
+            proxy=proxy,
+            timeout=20,
+            follow_redirects=True,
+        )
+        if resp.status_code != 200 or not resp.text:
+            LOG.info(f"  Nap binh luan day du tra ve HTTP {resp.status_code}, giu nguyen trang hien tai.")
+            return None
+        fragment = _RE_SCRIPT.sub('', resp.text)
+        fragment = _RE_IFRAME.sub('', fragment)
+    except Exception as e:
+        LOG.info(f"  Khong nap duoc binh luan day du ({e}), giu nguyen trang hien tai.")
+        return None
+
+    # Thay the container binh luan cu bang ban day du. Tra ve False neu fragment
+    # khong co container nhu mong doi -> DOM giu nguyen, khong mat du lieu.
+    try:
+        replaced = tab.evaluate(
+            """(frag) => {
+                const holder = document.createElement('div');
+                holder.innerHTML = frag;
+                const fresh = holder.querySelector('.outer-discussion-container');
+                const old = document.querySelector('.outer-discussion-container');
+                if (!fresh || !old) return false;
+                old.replaceWith(fresh);
+                return true;
+            }""",
+            fragment,
+        )
+    except Exception as e:
+        LOG.info(f"  Loi bom binh luan day du vao DOM ({e}), giu nguyen trang hien tai.")
+        return None
+    if not replaced:
+        return None
+
+    after = _count_comments(tab)
+    if after > before:
+        LOG.info(f"  Da nap day du binh luan: {before} -> {after}")
+    return before, after
+
+def _count_comments(tab):
+    """Dem so binh luan dang co trong DOM, tra ve 0 neu khong doc duoc."""
+    try:
+        return tab.eval_on_selector_all('.comment-content', 'els => els.length')
+    except Exception:
+        return 0
+
 def crawl_one_question(page, exam_code, topic, qnum):
     """Crawl mot cau hoi, tai su dung `page` (va session/cookie) dung chung.
 
@@ -379,6 +488,13 @@ def crawl_one_question(page, exam_code, topic, qnum):
         if not loaded:
             LOG.info("  Van khong tai duoc noi dung discussion, thu boc du lieu du co...")
         time.sleep(1)
+
+        # 3b. Trang chi render san ~20-25 binh luan dau; nap not phan con lai
+        #     truoc khi boc de khong cat cut thao luan o cac cau soi noi.
+        try:
+            load_full_comments(new_tab, href)
+        except Exception as e:
+            LOG.info(f"  Bo qua buoc nap binh luan day du: {e}")
 
         # 4 & 5. Xoa overlay va boc tach toan bo noi dung trong 1 lan evaluate duy nhat
         LOG.info("  Dang lay noi dung...")
