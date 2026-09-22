@@ -12,7 +12,3 @@ output/
 
 # JSON du lieu crawl (sinh tu dong, co the rat lon) -> khong track.
 *.json
-
-# Ngoai le: opencode.json la CAU HINH cong cu (provider/model), can track de
-# khong mat khi clone sang may khac. Khong chua secret tho (dung {env:...}).
-!opencode.json
