@@ -284,6 +284,16 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .discussion summary span { padding: 2px 8px; border-radius: 999px; background: var(--surface-soft); font-variant-numeric: tabular-nums; }
 .comment { padding: 12px 14px; margin: 0 0 9px; border-left: 3px solid var(--primary); border-radius: 4px 10px 10px 4px; background: var(--surface-soft); color: var(--muted); font-size: .88rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .error-tag { display: inline-block; margin-top: 14px; padding: 7px 10px; border-radius: 9px; background: var(--danger-soft); color: var(--danger); font-size: .8rem; font-weight: 750; }
+.top-comments { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--border); border-left: 3px solid var(--primary); border-radius: 10px; background: var(--surface-soft); }
+.top-comments .top-title { margin: 0 0 10px; font-size: .82rem; font-weight: 700; color: var(--text); }
+.top-comments ol { margin: 0; padding-left: 20px; }
+.top-comments li { margin-bottom: 10px; }
+.top-comments li:last-child { margin-bottom: 0; }
+.top-comments .top-meta { font-size: .74rem; font-weight: 700; color: var(--primary); margin-bottom: 3px; }
+.top-comments .top-badge { color: var(--success); }
+.top-comments .top-user { color: var(--muted); font-weight: 600; }
+.top-comments .top-text { font-size: .86rem; color: var(--text); white-space: pre-wrap; }
+.top-comments .top-note { margin: 10px 0 0; font-size: .74rem; font-style: italic; color: var(--muted); }
 body.answers-hidden .study-content .question-card:not(.revealed) .answer-chip .answer-prefix,
 body.answers-hidden .study-content .question-card:not(.revealed) .answer-chip .answer-value { display: none; }
 body.answers-hidden .study-content .question-card:not(.revealed) .answer-chip::after { content: "Answer hidden"; }
@@ -468,6 +478,38 @@ body:not(.answers-hidden) .answer-reveal { display: none; }
                 f'<div>{comment_items}</div></details>'
             )
 
+        # Cau HOTSPOT/DRAG DROP khong co dap an A/B/C/D -> hien binh luan noi bat
+        # (sap theo so luot upvote THAT cua ExamTopics) de nguoi doc tu danh gia.
+        # KHONG tu suy ra dap an: binh luan cong dong hay mau thuan nhau, doan sai
+        # con te hon de trong.
+        top_html = ""
+        if not suggested and not opt_list:
+            top = [c for c in (question.get("top_comments") or []) if isinstance(c, dict)]
+            if top:
+                items = []
+                for c in top:
+                    votes = as_int(c.get("votes"), 0)
+                    badge = escape_html(c.get("badge", "") or "")
+                    user = escape_html(c.get("user", "") or "")
+                    meta_bits = [b for b in (
+                        f"{votes} upvote" + ("s" if votes != 1 else "") if votes else "",
+                        f"<span class=\"top-badge\">{badge}</span>" if badge else "",
+                        f"<span class=\"top-user\">{user}</span>" if user else "",
+                    ) if b]
+                    items.append(
+                        f'<li><div class="top-meta">{" · ".join(meta_bits)}</div>'
+                        f'<div class="top-text">{escape_html(c.get("text", ""))}</div></li>'
+                    )
+                top_html = (
+                    '<div class="top-comments">'
+                    '<p class="top-title">Không có đáp án A/B/C/D cho dạng câu này. '
+                    'Bình luận nổi bật (theo lượt bình chọn của cộng đồng):</p>'
+                    f'<ol>{"".join(items)}</ol>'
+                    '<p class="top-note">Đây là ý kiến cộng đồng, không phải đáp án chính thức. '
+                    'Bình luận có thể mâu thuẫn nhau — hãy tự đối chiếu.</p>'
+                    '</div>'
+                )
+
         error_html = ""
         if question.get("error"):
             error_html = f'<div class="error-tag">Data error: {escape_html(question["error"])}</div>'
@@ -497,6 +539,7 @@ body:not(.answers-hidden) .answer-reveal { display: none; }
 {'<div class="q-images">' + image_html + '</div>' if image_html else ''}
 <ul class="options">{''.join(options_html)}</ul>
 {error_html}
+{top_html}
 <div class="study-actions">
 <button class="answer-reveal" type="button" data-action="toggle-answer" aria-expanded="false">Show answer</button>
 {source_html}

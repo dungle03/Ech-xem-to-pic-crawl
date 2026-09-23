@@ -2,9 +2,11 @@ import re
 import time
 import random
 import httpx
+from urllib.parse import urljoin, quote_plus
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from . import config
+from . import resolver
 from .config import (
     LOG,
     DEFAULT_OP_TIMEOUT,
@@ -25,6 +27,7 @@ from .config import (
     _HARVESTED_LINKS,
     _RE_SCRIPT,
     _RE_IFRAME,
+    _RE_NOISE_COMMENT,
 )
 from .parser import (
     canonical_exam_code,
@@ -122,21 +125,66 @@ def _search_is_blocked(page):
     except Exception:
         return False
 
-def search_engine(page, query, engine="duckduckgo"):
-    """Go query vao o tim kiem va tra ve trang thai search.
+def _read_search_result(page, cfg, engine, wait_load=True):
+    """Cho ket qua hien va doc trang thai search. Dung chung cho ca 2 duong.
 
-    Moi lan deu quay ve trang chu engine truoc roi moi go vao o tim kiem, nen
-    o luon sach (tranh query bi noi chong), dong thoi van giu cookie/session vi
-    context duoc tai su dung xuyen suot phien.
-    Tra ve `SEARCH_OK` khi co ket qua hien thi, `SEARCH_EMPTY` khi search binh
-    thuong nhung khong co ket qua, `SEARCH_BLOCKED` khi CAPTCHA/challenge, va
-    `SEARCH_ERROR` khi khong thao tac duoc trang.
+    Ket qua render bat dong bo SAU khi domcontentloaded da fire, nen phai doi
+    tan element ket qua xuat hien, khong sleep cung.
+
+    `wait_load=False` khi caller da cho trang load xong roi (duong URL truc tiep
+    truyen `wait_until="domcontentloaded"` vao chinh `goto`): cho them lan nua la
+    doi vo ich ~4s moi lan search.
     """
-    cfg = SEARCH_ENGINES.get(engine)
-    if not cfg:
-        LOG.warning(f"  Engine khong ho tro: {engine}")
-        return SEARCH_ERROR
+    got_results = False
+    if wait_load:
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=DEFAULT_OP_TIMEOUT)
+        except PlaywrightTimeoutError:
+            pass
+    combined_sel = ", ".join(cfg["result_selectors"])
+    try:
+        page.wait_for_selector(combined_sel, timeout=8000)
+        got_results = True
+    except (PlaywrightTimeoutError, Exception):
+        pass
+    time.sleep(random.uniform(0.4, 0.8))
+    if _search_is_blocked(page):
+        LOG.warning(f"  {engine} bi chan/CAPTCHA sau khi search")
+        return SEARCH_BLOCKED
+    return SEARCH_OK if got_results else SEARCH_EMPTY
 
+def _search_via_url(page, cfg, query, engine):
+    """Duong nhanh: dieu huong thang toi URL ket qua cua engine.
+
+    Do tren trang that: ~1.8-3.7s thay vi 12.9s vi bo duoc buoc ve trang chu +
+    go tung ky tu + cho tung ky tu. Da do 22/22 lan lien tiep khong bi CAPTCHA
+    tren DuckDuckGo. Tra ve None neu khong dung duoc (thieu template, khong tai
+    duoc trang, hoac bi chan) de caller rot ve duong go tay.
+    """
+    template = cfg.get("url_template")
+    if not template:
+        return None
+    url = template.format(query=quote_plus(query))
+    # Cho thang domcontentloaded trong goto: khong can them wait_for_load_state
+    # nua, tiet kiem ~4s moi lan search (do duoc).
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    except Exception as e:
+        LOG.warning(f"    Khong tai duoc URL search truc tiep: {e}")
+        return None
+    if cfg["has_consent"]:
+        _accept_consent(page)
+    if _search_is_blocked(page):
+        # Bi chan ngay khi vao -> tra None de thu duong go tay (giong nguoi hon).
+        return None
+    return _read_search_result(page, cfg, engine, wait_load=False)
+
+def _search_by_typing(page, cfg, query, engine):
+    """Duong du phong: ve trang chu roi go tung ky tu nhu nguoi that.
+
+    Cham hon nhung giong nguoi hon, nen giu lai cho truong hop URL truc tiep bi
+    chan/CAPTCHA.
+    """
     # Luon ve trang chu de co o tim kiem trong, sach.
     if not safe_goto(page, cfg["home"]):
         LOG.warning(f"  Khong tai duoc {engine}")
@@ -184,30 +232,47 @@ def search_engine(page, query, engine="duckduckgo"):
         LOG.warning(f"  Loi go query: {e}")
         return SEARCH_ERROR
 
-    # Cho ket qua hien. Ket qua render bat dong bo SAU khi domcontentloaded
-    # da fire, nen phai doi tan element ket qua xuat hien, khong sleep cung.
-    got_results = False
-    try:
-        page.wait_for_load_state("domcontentloaded", timeout=DEFAULT_OP_TIMEOUT)
-    except PlaywrightTimeoutError:
-        pass
-    combined_sel = ", ".join(cfg["result_selectors"])
-    try:
-        page.wait_for_selector(combined_sel, timeout=8000)
-        got_results = True
-    except (PlaywrightTimeoutError, Exception):
-        pass
-    time.sleep(random.uniform(0.8, 1.5))
-    if _search_is_blocked(page):
-        LOG.warning(f"  {engine} bi chan/CAPTCHA sau khi search")
-        return SEARCH_BLOCKED
-    return SEARCH_OK if got_results else SEARCH_EMPTY
+    return _read_search_result(page, cfg, engine)
+
+def search_engine(page, query, engine="duckduckgo"):
+    """Tim query tren engine va tra ve trang thai search.
+
+    Uu tien duong NHANH (dieu huong thang toi URL ket qua) vi nhanh hon ~6.5x;
+    neu duong do khong dung duoc (bi chan/khong tai duoc) thi tu dong rot ve
+    duong go tay tung ky tu nhu nguoi that. Nho vay tool vua nhanh vua giu duoc
+    kha nang chong CAPTCHA cua ban cu.
+
+    Tra ve `SEARCH_OK` khi co ket qua hien thi, `SEARCH_EMPTY` khi search binh
+    thuong nhung khong co ket qua, `SEARCH_BLOCKED` khi CAPTCHA/challenge, va
+    `SEARCH_ERROR` khi khong thao tac duoc trang.
+    """
+    cfg = SEARCH_ENGINES.get(engine)
+    if not cfg:
+        LOG.warning(f"  Engine khong ho tro: {engine}")
+        return SEARCH_ERROR
+
+    fast = _search_via_url(page, cfg, query, engine)
+    if fast is not None:
+        return fast
+
+    LOG.info(f"  {engine}: duong URL truc tiep khong dung duoc, thu go tay...")
+    return _search_by_typing(page, cfg, query, engine)
 
 def find_discussion_link(page, exam_code, topic, qnum):
-    """Tim URL discussion khop cau hoi. Thu cache truoc, roi DuckDuckGo -> Google.
+    """Tim URL discussion khop cau hoi. Thu TAT DINH truoc, roi moi den search.
 
-    Them 'site:examtopics.com' de thu hep ket qua chi trong examtopics, tang
-    do chinh xac va recall. Google chi dung khi DDG khong ra ket qua dung cau.
+    Thu tu:
+    0. Bo giai tat dinh (`resolver.resolve`): dung question_id + AJAX cua chinh
+       examtopics, KHONG dung search engine. Day la duong chinh vi no khong phu
+       thuoc vao viec search engine co index dung trang hay khong.
+    1. DuckDuckGo voi 2 dang query (co/khong `site:`).
+    2. Google voi 2 dang query do.
+
+    Vi sao van phai giu search: bo giai tat dinh can 1 "anchor" (question_id da
+    biet) cho moi khoi cau. Khoi dau tien luon co san tu trang exam, con khoi sau
+    thi phai cho den khi crawl duoc 1 cau trong khoi do. Khi search tim ra cau dau
+    tien cua khoi, anchor duoc ghi lai va cac cau con lai cua khoi duoc giai tat
+    dinh -> search chi con dung 1 lan cho moi khoi thay vi moi cau.
     """
     target_key = (canonical_exam_code(exam_code), int(topic), int(qnum))
     if target_key in _HARVESTED_LINKS:
@@ -215,29 +280,54 @@ def find_discussion_link(page, exam_code, topic, qnum):
         LOG.info(f"  [Bo nho cache] Dung link discussion da thu thap: {cached_url}")
         return cached_url
 
-    query = (f"exam {exam_code} topic {topic} question {qnum} "
-             f"discussion site:examtopics.com")
+    # 0. Duong tat dinh (khong search).
+    try:
+        resolved = resolver.resolve(exam_code, topic, qnum)
+    except Exception as e:
+        LOG.warning(f"  Loi bo giai tat dinh: {e}")
+        resolved = None
+    if resolved:
+        LOG.info(f"  [Tat dinh] Giai duoc link khong can search: {resolved}")
+        return resolved
 
-    # 1. DuckDuckGo (engine chinh, it CAPTCHA)
-    ddg_status = search_engine(page, query, "duckduckgo")
-    if ddg_status == SEARCH_OK:
-        href = extract_matching_link(page, exam_code, topic, qnum)
-        if href:
-            return href
-    if ddg_status == SEARCH_BLOCKED:
-        LOG.info("  DuckDuckGo bi chan/CAPTCHA, thu Google...")
-    elif ddg_status == SEARCH_EMPTY:
-        LOG.info("  DuckDuckGo khong tra ve ket qua nao, thu Google...")
-    else:
-        LOG.info("  DuckDuckGo khong co link dung cau, thu Google...")
+    queries = (
+        f"exam {exam_code} topic {topic} question {qnum} discussion site:examtopics.com",
+        f'exam "{exam_code}" topic {topic} question {qnum} discussion',
+    )
+    statuses = {"duckduckgo": SEARCH_ERROR, "google": SEARCH_ERROR}
+    # Thu het cac dang query tren DuckDuckGo TRUOC khi chuyen sang Google: DDG
+    # khoan dung voi query tu dong hon nhieu, con Google de ra CAPTCHA nen chi nen
+    # goi khi DDG da het cach.
+    for index, query in enumerate(queries):
+        status = search_engine(page, query, "duckduckgo")
+        statuses["duckduckgo"] = status
+        if status == SEARCH_OK:
+            href = extract_matching_link(page, exam_code, topic, qnum)
+            if href:
+                return href
+        if status == SEARCH_BLOCKED:
+            LOG.info("  DuckDuckGo bi chan/CAPTCHA.")
+        elif status == SEARCH_EMPTY:
+            LOG.info("  DuckDuckGo khong tra ve ket qua nao.")
+        else:
+            LOG.info("  DuckDuckGo khong co link dung cau.")
+        if index < len(queries) - 1:
+            LOG.info("  Thu lai bang dang query khac (bo 'site:', boc ma de trong ngoac kep)...")
 
-    # 2. Google (fallback)
-    google_status = search_engine(page, query, "google")
-    if google_status == SEARCH_OK:
-        href = extract_matching_link(page, exam_code, topic, qnum)
-        if href:
-            return href
-    return no_link_result(ddg_status, google_status)
+    for query in queries:
+        status = search_engine(page, query, "google")
+        statuses["google"] = status
+        if status == SEARCH_OK:
+            href = extract_matching_link(page, exam_code, topic, qnum)
+            if href:
+                return href
+        if status == SEARCH_BLOCKED:
+            LOG.info("  Google bi chan/CAPTCHA.")
+        elif status == SEARCH_EMPTY:
+            LOG.info("  Google khong tra ve ket qua nao.")
+        else:
+            LOG.info("  Google khong co link dung cau.")
+    return no_link_result(statuses["duckduckgo"], statuses["google"])
 
 def close_extra_tabs(main_page):
     """Dong moi tab tru tab DuckDuckGo chinh (main_page).
@@ -436,6 +526,92 @@ def _count_comments(tab):
     except Exception:
         return 0
 
+def question_id_from_tab(tab):
+    """Doc question_id cua cau hoi tu tab discussion dang mo. None neu khong co.
+
+    Day la nguon "anchor" mien phi: trang discussion nao cung co
+    `.question-body[data-id]`, va question_id lien mach theo khoi nen chi can 1
+    anchor moi khoi la giai duoc ca khoi bang duong tat dinh.
+    """
+    try:
+        return resolver.question_id_from_html(tab.content())
+    except Exception:
+        return None
+
+def _absolutize_images(urls, base_url):
+    """Doi URL anh tuong doi thanh tuyet doi, lay `base_url` lam goc.
+
+    Vi sao can: duong nap nhanh `load_discussion_via_http` bom HTML vao
+    `about:blank` bang `document.write`, nen trang KHONG co base URL de phan
+    giai. Khi do `im.src` tra ve nguyen chuoi tuong doi nam trong HTML
+    (`/assets/media/exam-media/...`), va cac lop sau (`_safe_url` cua exporter)
+    coi do la scheme khong an toan roi loai bo -> anh mat AM THAM, khong loi.
+    Khi trang duoc nap bang dieu huong that thi `im.src` da la URL tuyet doi, nen
+    ham nay chi la lop bao hiem (idempotent).
+
+    Tra ve danh sach moi, giu nguyen thu tu va bo qua gia tri rac.
+    """
+    cleaned = []
+    for u in urls or []:
+        if not isinstance(u, str) or not u:
+            continue
+        if base_url and not u.startswith(("http://", "https://", "data:")):
+            u = urljoin(base_url, u)
+        cleaned.append(u)
+    return cleaned
+
+def _is_noise_comment(text):
+    """Binh luan chi bao "da gap cau nay trong ky thi" -> khong phai y kien ve dap an.
+
+    Do tren du lieu that ms-700 (20 cau dac biet): 13/86 (15%) binh luan noi bat
+    chi la "On exam March 2023", "On the test Nov, 12 2021"... Nhung nguoi thi roi
+    upvote nhau nen chung len top, trong khi dap an that nam o binh luan it vote
+    hon. Hien thi chung se lam loang thong tin huu ich.
+    """
+    t = (text or "").strip()
+    if not t:
+        return True
+    return bool(_RE_NOISE_COMMENT.match(t))
+
+def _clean_top_comments(raw):
+    """Chuan hoa danh sach binh luan noi bat lay tu trang discussion.
+
+    Moi muc: {text, votes, user, badge}. Sap xep theo so luot upvote that va giu
+    toi da 5 muc. Du lieu rac bi bo qua thay vi lam hong ca ban ghi.
+
+    Day la du lieu CONG DONG (khong phai dap an chinh thuc), nen chi de hien thi
+    cho nguoi doc tu danh gia -- dac biet voi cau HOTSPOT/DRAG DROP khong co dap
+    an A/B/C/D. Tool KHONG tu suy ra dap an tu day.
+    """
+    if not isinstance(raw, list):
+        return []
+    cleaned = []
+    seen = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        if _is_noise_comment(text):
+            continue
+        key = text[:120]
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            votes = int(item.get("votes") or 0)
+        except (TypeError, ValueError):
+            votes = 0
+        cleaned.append({
+            "text": text,
+            "votes": max(0, votes),
+            "user": str(item.get("user") or "").strip(),
+            "badge": str(item.get("badge") or "").strip(),
+        })
+    cleaned.sort(key=lambda c: -c["votes"])
+    return cleaned[:5]
+
 def crawl_one_question(page, exam_code, topic, qnum):
     """Crawl mot cau hoi, tai su dung `page` (va session/cookie) dung chung.
 
@@ -487,7 +663,20 @@ def crawl_one_question(page, exam_code, topic, qnum):
             return None
         if not loaded:
             LOG.info("  Van khong tai duoc noi dung discussion, thu boc du lieu du co...")
-        time.sleep(1)
+            # Chi cho khi phai dieu huong that: luc do trang con dang render.
+            # Duong HTTP-first bom HTML bang document.write (DONG BO) nen DOM da
+            # san sang ngay, cho them 1s moi cau la phi (~1s x N cau).
+            time.sleep(1)
+
+        # Thu hoach anchor (topic, qnum) -> question_id tu trang vua tai. Trang
+        # discussion nao cung lo `question-body data-id`, nen buoc nay MIEN PHI va
+        # giup cac cau sau trong cung khoi giai duoc khong can search.
+        try:
+            anchor_qid = question_id_from_tab(new_tab)
+            if anchor_qid:
+                resolver.record_anchor(exam_code, topic, qnum, anchor_qid)
+        except Exception:
+            pass
 
         # 3b. Trang chi render san ~20-25 binh luan dau; nap not phan con lai
         #     truoc khi boc de khong cat cut thao luan o cac cau soi noi.
@@ -561,6 +750,41 @@ def crawl_one_question(page, exam_code, topic, qnum):
                         .map(c => c.innerText.trim())
                         .filter(u => u);
 
+                    // Binh luan noi bat: ExamTopics hien so luot upvote that
+                    // (`.upvote-count`) va badge "Highly Voted" do cong dong binh
+                    // chon. Day la tin hieu KHACH QUAN, khong phai suy doan cua
+                    // tool -> dung de hien thi cho nguoi doc tu danh gia, dac biet
+                    // voi cau HOTSPOT/DRAG DROP khong co dap an A/B/C/D.
+                    let topComments = [];
+                    try {
+                        const seen = new Set();
+                        topComments = Array.from(document.querySelectorAll('.media.comment-container'))
+                            .map(box => {
+                                const contentEl = box.querySelector('.comment-content');
+                                const text = contentEl ? contentEl.innerText.trim() : '';
+                                if (!text) return null;
+                                const voteEl = box.querySelector('.upvote-count');
+                                const badgeEl = box.querySelector('.comment-head .badge');
+                                const userEl = box.querySelector('.comment-username');
+                                return {
+                                    text: text,
+                                    votes: voteEl ? parseInt(voteEl.innerText, 10) || 0 : 0,
+                                    user: userEl ? userEl.innerText.trim() : '',
+                                    badge: badgeEl ? badgeEl.innerText.trim() : ''
+                                };
+                            })
+                            .filter(c => {
+                                if (!c) return false;
+                                // Bo trung lap (trang co the lap lai comment sau khi load-complete).
+                                const k = c.user + '|' + c.text.slice(0, 80);
+                                if (seen.has(k)) return false;
+                                seen.add(k);
+                                return true;
+                            })
+                            .sort((a, b) => b.votes - a.votes)
+                            .slice(0, 5);
+                    } catch (e) {}
+
                     let communityVotes = [];
                     let communityMostVoted = [];
                     try {
@@ -603,7 +827,8 @@ def crawl_one_question(page, exam_code, topic, qnum):
                         options: options,
                         community_most_voted: communityMostVoted,
                         community_votes: communityVotes,
-                        answers: comments
+                        answers: comments,
+                        top_comments: topComments
                     };
                 }
             """)
@@ -632,7 +857,10 @@ def crawl_one_question(page, exam_code, topic, qnum):
 
         clean_q = question
         clean_ans = [a for a in answers if a]
-        clean_q_images = [u for u in question_images if isinstance(u, str) and u]
+        # Anh phai duoc tuyet doi hoa truoc khi luu: duong HTTP-first bom HTML vao
+        # about:blank nen URL anh con nguyen dang tuong doi (/assets/...) va se bi
+        # exporter loai bo -> mat anh. Xem `_absolutize_images`.
+        clean_q_images = _absolutize_images(question_images, href)
         clean_options = []
         suggested_answers = []
         for opt in options:
@@ -641,8 +869,7 @@ def crawl_one_question(page, exam_code, topic, qnum):
             letter = opt.get("letter", "") or ""
             text = opt.get("text", "") or ""
             is_correct = bool(opt.get("is_correct"))
-            opt_imgs_raw = opt.get("images") or []
-            opt_images = [u for u in opt_imgs_raw if isinstance(u, str) and u]
+            opt_images = _absolutize_images(opt.get("images"), href)
             clean_options.append({
                 "letter": letter,
                 "text": text,
@@ -656,6 +883,7 @@ def crawl_one_question(page, exam_code, topic, qnum):
         raw_most_voted = [str(x).strip() for x in (extracted_data.get("community_most_voted") or []) if str(x).strip()]
         clean_community_most_voted = list(dict.fromkeys(raw_most_voted))
         community_votes = extracted_data.get("community_votes") or []
+        top_comments = _clean_top_comments(extracted_data.get("top_comments"))
 
         LOG.info(f"  Cau hoi: {clean_q[:100]}...")
         if clean_q_images:
@@ -679,6 +907,7 @@ def crawl_one_question(page, exam_code, topic, qnum):
             "community_most_voted": clean_community_most_voted,
             "community_votes": community_votes,
             "answers": clean_ans,
+            "top_comments": top_comments,
             "url": url
         }
     except Exception as e:

@@ -162,10 +162,14 @@ Ghi chú:
 * `examtopic/`: Gói module lõi phân tách theo trách nhiệm:
   * `config.py`: Quản lý cấu hình engine, hằng số, proxy và cache ảnh 2 tầng.
   * `parser.py`: Chuẩn hóa mã đề, so khớp slug, unwrap redirect và lưu JSON atomic.
+  * `resolver.py`: Giải URL discussion **không cần search engine** bằng `question_id`
+    + AJAX của ExamTopics (có verify title trước khi dùng). Anchor đến từ trang exam
+    và từ mỗi câu đã crawl, lưu ở `output/.anchors.json`.
   * `crawler.py`: Điều phối tìm kiếm, nạp discussion, đồng bộ session và bóc dữ liệu.
   * `exporters/`: Dựng HTML ôn tập/thi thử (`html.py`) và Word kèm Answer Key (`docx.py`).
 * `tool.py`: CLI entrypoint điều phối chính, re-export 100% tương thích ngược.
-* `test_tool.py`: Bộ unit tests tự động kiểm thử toàn bộ luồng xử lý (hiện có 96 test).
+* `test_tool.py`: Bộ unit tests tự động kiểm thử toàn bộ luồng xử lý (hiện có 146 test).
+* `docs/crawl-flow.html`: Sơ đồ tương tác luồng crawl (nguồn: `crawl-flow.workflow.json`).
 
 ### Kiểm thử
 

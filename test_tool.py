@@ -357,6 +357,282 @@ class TestHarvestedLinksCache(unittest.TestCase):
         mock_page.goto.assert_not_called()
 
 
+class TestFindDiscussionLinkQueryFallback(unittest.TestCase):
+    """Bug that: cau 108 ccaak ton tai that nhung tool bao "khong co discussion".
+
+    Nguyen nhan: dang query chinh luon kem `site:examtopics.com`. Search engine
+    khi do tu dong SUA ma de (ccaak -> ccsk) va tra ve cau cung so cua ma de
+    KHAC -> khong link nao khop -> bao thieu cau. Do tren ccaak: cau 108, 98,
+    85, 57, 86 deu ton tai, chi tim thay khi BO `site:` va boc ma de trong ngoac
+    kep. Test nay khoa HANH VI: dang query chinh that bai thi phai thu tiep dang
+    du phong, va chi nhan link khop dung ma de + cau.
+    """
+
+    TARGET = "https://www.examtopics.com/discussions/confluent/view/382176-exam-ccaak-topic-1-question-108-discussion/"
+
+    def _page_returning(self, hrefs_for_query, seen):
+        """Trang gia + patch search_engine: ghi lai query da thu, tra ve SERP gia.
+
+        `search_engine` duoc patch nen khong can browser; `extract_matching_link`
+        van chay THAT tren cac anchor do trang gia tra ve, nho vay test kiem tra
+        dung logic so khop ma de + cau.
+        """
+        page = MagicMock()
+        page.url = "https://duckduckgo.com/"
+
+        def fake_search(_page, query, engine="duckduckgo"):
+            seen.append((engine, query))
+            return SEARCH_OK
+
+        def query_selector_all(sel):
+            anchors = []
+            for h in hrefs_for_query(seen[-1][1]):
+                a = MagicMock()
+                a.get_attribute.return_value = h
+                anchors.append(a)
+            return anchors
+
+        page.query_selector_all.side_effect = query_selector_all
+        patcher = patch("examtopic.crawler.search_engine", side_effect=fake_search)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # Tat bo giai tat dinh trong nhom test nay: chung kiem tra duong SEARCH.
+        # (Duong tat dinh co test rieng o TestDeterministicResolver.)
+        p2 = patch("examtopic.resolver.resolve", return_value=None)
+        p2.start()
+        self.addCleanup(p2.stop)
+        return page
+
+    def test_falls_back_to_unquoted_query_when_site_query_yields_other_exam(self):
+        """Dang `site:` chi ra cau 108 cua ma de khac -> phai thu dang du phong."""
+        other_exam = "https://www.examtopics.com/discussions/isaca/view/92443-exam-ccak-topic-1-question-108-discussion/"
+
+        def hrefs(query):
+            if 'site:examtopics.com' in query:
+                return [other_exam]
+            return [other_exam, self.TARGET]
+
+        seen = []
+        page = self._page_returning(hrefs, seen)
+        _HARVESTED_LINKS.clear()
+        result = find_discussion_link(page, "ccaak", 1, 108)
+        self.assertEqual(result, self.TARGET)
+        self.assertTrue(any('"ccaak"' in q for _, q in seen),
+                        "dang du phong phai boc ma de trong ngoac kep")
+        self.assertTrue(any('site:examtopics.com' in q for _, q in seen),
+                        "dang query chinh phai duoc thu truoc")
+
+    def test_does_not_return_link_of_different_exam(self):
+        """Link cua ma de khac KHONG duoc coi la khop (ke ca khi cung so cau)."""
+        other_exam = "https://www.examtopics.com/discussions/isaca/view/92443-exam-ccak-topic-1-question-108-discussion/"
+        seen = []
+        page = self._page_returning(lambda q: [other_exam], seen)
+        _HARVESTED_LINKS.clear()
+        result = find_discussion_link(page, "ccaak", 1, 108)
+        self.assertIs(result, NO_DISCUSSION_MISSING)
+
+    def test_tries_second_query_form_for_every_engine(self):
+        """Moi dang query phai duoc thu o CA DuckDuckGo lan Google."""
+        seen = []
+        page = self._page_returning(lambda q: [], seen)
+        _HARVESTED_LINKS.clear()
+        find_discussion_link(page, "ccaak", 1, 108)
+        engines = {e for e, _ in seen}
+        self.assertEqual(engines, {"duckduckgo", "google"})
+        self.assertEqual(len(seen), 4, "2 dang query x 2 engine")
+
+    def test_reports_blocked_only_when_both_engines_blocked(self):
+        page = MagicMock()
+        page.url = "https://duckduckgo.com/"
+        page.query_selector_all.return_value = []
+        page.keyboard.type.side_effect = None
+        page.query_selector.return_value = None
+        _HARVESTED_LINKS.clear()
+        with patch("examtopic.crawler.search_engine", return_value=SEARCH_BLOCKED):
+            result = find_discussion_link(page, "ccaak", 1, 108)
+        self.assertIs(result, NO_DISCUSSION_BLOCKED)
+
+
+class TestDeterministicResolver(unittest.TestCase):
+    """Bo giai TAT DINH: qnum -> URL discussion khong dung search engine.
+
+    Cơ che (do tren du lieu that cua ccaak):
+      - `/exams/<bat-ky>/<code>/view/1/` lo ra 10 question_id dau (category
+        trong URL la cosmetic nen khong can biet vendor).
+      - `/ajax/discussion/exam-question/<question_id>` tra ve discussion_id +
+        title => vua lay duoc URL vua VERIFY duoc dung de/topic/cau.
+      - question_id lien mach theo khoi: ccaak q1..q54 -> 949311..949364,
+        q55..q109 -> 977877..977931.
+
+    Nho do: 1 anchor moi khoi la giai duoc ca khoi, va doan sai bi loai bo nho
+    doi chieu title -- khong bao gio tra ve link cua cau khac.
+    """
+
+    def setUp(self):
+        from examtopic import resolver
+        self.R = resolver
+        self.tmp = tempfile.mkdtemp()
+        self._old = resolver.OUTPUT_DIR
+        resolver.OUTPUT_DIR = self.tmp
+        resolver.clear_anchors()
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        self.R.OUTPUT_DIR = self._old
+        self.R.clear_anchors()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_parse_title_extracts_code_topic_question(self):
+        self.assertEqual(self.R.parse_title("Exam CCAAK topic 1 question 108 discussion"),
+                         ("ccaak", 1, 108))
+        self.assertEqual(self.R.parse_title("Exam SC-300 topic 2 question 131 discussion"),
+                         ("sc300", 2, 131))
+        self.assertIsNone(self.R.parse_title("Exam CCAAK topic 1 question 108"))
+
+    def test_question_id_from_html(self):
+        html = ('<div class="question-body mt-3 pt-3 border-top" '
+                'data-id="977931"><p>hi</p></div>')
+        self.assertEqual(self.R.question_id_from_html(html), 977931)
+        self.assertIsNone(self.R.question_id_from_html("<html>nothing</html>"))
+        self.assertIsNone(self.R.question_id_from_html(""))
+
+    def test_discussion_url_uses_real_category(self):
+        url = self.R.discussion_url("382176", "ccaak", 1, 108, category="confluent")
+        self.assertEqual(
+            url,
+            "https://www.examtopics.com/discussions/confluent/view/"
+            "382176-exam-ccaak-topic-1-question-108-discussion/")
+
+    def test_discussion_url_strips_dots_from_exam_slug(self):
+        """Dau CHAM trong slug ma de lam server tra 404 -> URL chet.
+
+        Do tren trang that: `/view/<id>-exam-h12-711_v4.0-...` -> 404, con
+        `/view/<id>-exam-h12711v40-...` -> 200. Truoc day ham nay dung
+        `normalize_exam_code` (giu `_` va `.`) nen moi ma de co dau cham
+        (H12-711_V4.0, H12-411_V2.0, FCSS_NST_SE-7.6) sinh URL chet, khien
+        tool bao "khong lay duoc cau hoi" cho cau hoi ton tai that.
+        """
+        for code, expected_slug in (
+            ("H12-711_V4.0", "h12711v40"),
+            ("H12-411_V2.0", "h12411v20"),
+            ("FCSS_NST_SE-7.6", "fcssnstse76"),
+            ("sk0-005", "sk0005"),
+        ):
+            url = self.R.discussion_url("325747", code, 1, 1, category="huawei")
+            tail = url.split("/view/", 1)[1]
+            self.assertIn(f"-exam-{expected_slug}-topic-1-question-1-discussion/", url)
+            self.assertNotIn(".", tail, f"slug ma de khong duoc chua dau cham: {url}")
+            self.assertNotIn("_", tail, f"slug ma de khong duoc chua gach duoi: {url}")
+
+    def test_discussion_url_category_slot_accepts_any_form(self):
+        """Category la cosmetic (dien gi cung 200) - chuan hoa cho gon, khong hong URL."""
+        url = self.R.discussion_url("325747", "H12-711_V4.0", 1, 1, category="huawei")
+        self.assertTrue(url.startswith(
+            "https://www.examtopics.com/discussions/huawei/view/"))
+
+    def test_resolve_uses_nearest_anchor_and_verifies(self):
+        """q18 = q1 + 17 => 949328, va title phai khop moi duoc tra ve."""
+        self.R.record_anchor("ccaak", 1, 1, 949311)
+
+        def fake_ajax(qid):
+            if qid == 949328:
+                return "314606", "Exam CCAAK topic 1 question 18 discussion"
+            return None
+
+        with patch.object(self.R, "ajax_lookup", side_effect=fake_ajax):
+            url = self.R.resolve("ccaak", 1, 18)
+        self.assertIn("314606-exam-ccaak-topic-1-question-18-discussion", url)
+
+    def test_resolve_rejects_wrong_question(self):
+        """Doan ra cau KHAC thi phai bo qua, khong tra ve link sai."""
+        self.R.record_anchor("ccaak", 1, 1, 949311)
+
+        def fake_ajax(qid):
+            # Tra ve title cua cau 999 -> khong khop cau 18 dang tim.
+            return "111111", "Exam CCAAK topic 1 question 999 discussion"
+
+        with patch.object(self.R, "ajax_lookup", side_effect=fake_ajax):
+            self.assertIsNone(self.R.resolve("ccaak", 1, 18))
+
+    def test_resolve_rejects_different_exam(self):
+        """Cung so cau nhung khac ma de thi khong duoc nhan."""
+        self.R.record_anchor("ccaak", 1, 1, 949311)
+
+        def fake_ajax(qid):
+            return "92443", "Exam CCAK topic 1 question 18 discussion"
+
+        with patch.object(self.R, "ajax_lookup", side_effect=fake_ajax):
+            self.assertIsNone(self.R.resolve("ccaak", 1, 18))
+
+    def test_resolve_returns_none_without_anchor(self):
+        """Khong co anchor nao -> tra None de caller rot ve search."""
+        with patch.object(self.R, "seed_from_exam_page", return_value=0):
+            self.assertIsNone(self.R.resolve("ccaak", 1, 108))
+
+    def test_one_anchor_unlocks_whole_block(self):
+        """1 anchor o khoi 2 phai giai duoc moi cau trong khoi do.
+
+        Khoi 2 cua ccaak: q55 -> 977877 ... q109 -> 977931 (lien mach), nen
+        q78 = 977877+23 = 977900 va q85 = 977877+30 = 977907.
+        """
+        self.R.record_anchor("ccaak", 1, 109, 977931)
+        table = {977900: ("382212", 78), 977907: ("382210", 85),
+                 977931: ("382204", 109)}
+
+        def fake_ajax(qid):
+            if qid in table:
+                did, q = table[qid]
+                return did, f"Exam CCAAK topic 1 question {q} discussion"
+            return None
+
+        with patch.object(self.R, "ajax_lookup", side_effect=fake_ajax):
+            self.assertIn("382212-exam-ccaak-topic-1-question-78-discussion",
+                          self.R.resolve("ccaak", 1, 78))
+            self.assertIn("382210-exam-ccaak-topic-1-question-85-discussion",
+                          self.R.resolve("ccaak", 1, 85))
+
+    def test_anchors_persist_across_runs(self):
+        """Anchor phai song qua lan chay sau (doc lai tu dia)."""
+        self.R.record_anchor("ccaak", 1, 108, 977930)
+        self.R.clear_anchors()
+        self.R.load_anchors()
+        self.assertEqual(self.R.ANCHORS["ccaak"][(1, 108)], 977930)
+
+    def test_corrupt_anchor_file_does_not_crash(self):
+        with open(self.R._anchor_path(), "w", encoding="utf-8") as f:
+            f.write("{not json")
+        self.R.clear_anchors()
+        self.assertEqual(self.R.load_anchors(), {})
+
+    def test_seed_parses_exam_page(self):
+        """Trang exam that co dang: Question #N ... Topic M ... data-id."""
+        html = (
+            '<div class="card-header">Question #1 '
+            '<span class="question-title-topic pull-right">Topic 1</span></div>'
+            '<div class="card-body question-body" data-id="949311">q</div>'
+            '<div class="card-header">Question #2 '
+            '<span class="question-title-topic pull-right">Topic 1</span></div>'
+            '<div class="card-body question-body" data-id="949312">q</div>'
+        )
+        with patch.object(self.R, "_http_get", return_value=html):
+            added = self.R.seed_from_exam_page("ccaak")
+        self.assertEqual(added, 2)
+        self.assertEqual(self.R.ANCHORS["ccaak"][(1, 1)], 949311)
+        self.assertEqual(self.R.ANCHORS["ccaak"][(1, 2)], 949312)
+
+    def test_find_discussion_link_prefers_deterministic_path(self):
+        """Co link tat dinh thi KHONG duoc goi search engine nao."""
+        url = ("https://www.examtopics.com/discussions/confluent/view/"
+               "382176-exam-ccaak-topic-1-question-108-discussion/")
+        _HARVESTED_LINKS.clear()
+        page = MagicMock()
+        with patch("examtopic.resolver.resolve", return_value=url), \
+             patch("examtopic.crawler.search_engine") as mock_search:
+            result = find_discussion_link(page, "ccaak", 1, 108)
+        self.assertEqual(result, url)
+        mock_search.assert_not_called()
+
+
 class TestProxyConfiguration(unittest.TestCase):
     def test_set_proxy(self):
         set_proxy("http://127.0.0.1:8888")
@@ -399,6 +675,104 @@ class TestProxyConfiguration(unittest.TestCase):
         with patch("examtopic.crawler.httpx.get", return_value=resp) as mock_get:
             load_discussion_via_http(tab, "https://x.test")
         self.assertIsNone(mock_get.call_args.kwargs.get("proxy"))
+
+
+class TestSearchFastPath(unittest.TestCase):
+    """Search co 2 duong: URL truc tiep (nhanh) va go tay (du phong chong CAPTCHA).
+
+    Do tren trang that: go tay 12.9s/lan, URL truc tiep 1.8-3.7s va 22/22 lan
+    lien tiep khong bi chan. Nhung duong nhanh KHONG duoc phep lam mat kha nang
+    chong CAPTCHA cua ban cu -> phai tu dong rot ve go tay khi bi chan.
+    """
+
+    def _cfg(self):
+        from examtopic.config import SEARCH_ENGINES
+        return SEARCH_ENGINES
+
+    def test_every_engine_has_url_template(self):
+        """Thieu template thi duong nhanh tat am tham -> phai co test khoa lai."""
+        for name, cfg in self._cfg().items():
+            self.assertIn("url_template", cfg, f"{name} thieu url_template")
+            self.assertIn("{query}", cfg["url_template"],
+                          f"{name} template phai co cho noi query")
+
+    def test_url_template_is_valid_and_encodes_query(self):
+        from urllib.parse import urlparse, quote_plus
+        for name, cfg in self._cfg().items():
+            url = cfg["url_template"].format(query=quote_plus("exam pl-300 topic 1"))
+            parsed = urlparse(url)
+            self.assertEqual(parsed.scheme, "https", f"{name} phai la https")
+            self.assertTrue(parsed.netloc, f"{name} phai co host")
+            self.assertIn("pl-300", url)
+
+    def test_fast_path_used_when_it_works(self):
+        """Duong nhanh chay duoc -> KHONG duoc go tay (tiet kiem ~10s/lan)."""
+        from examtopic import crawler
+        page = MagicMock()
+        page.url = "https://duckduckgo.com/?q=x"
+        page.query_selector.return_value = None
+        with patch.object(crawler, "_search_via_url", return_value=SEARCH_OK) as fast, \
+             patch.object(crawler, "_search_by_typing") as typing:
+            result = crawler.search_engine(page, "exam x topic 1 question 1", "duckduckgo")
+        self.assertEqual(result, SEARCH_OK)
+        fast.assert_called_once()
+        typing.assert_not_called()
+
+    def test_falls_back_to_typing_when_url_path_blocked(self):
+        """URL truc tiep bi chan -> PHAI rot ve go tay, khong duoc bo cuoc."""
+        from examtopic import crawler
+        page = MagicMock()
+        with patch.object(crawler, "_search_via_url", return_value=None), \
+             patch.object(crawler, "_search_by_typing", return_value=SEARCH_OK) as typing:
+            result = crawler.search_engine(page, "exam x topic 1 question 1", "duckduckgo")
+        self.assertEqual(result, SEARCH_OK)
+        typing.assert_called_once()
+
+    def test_blocked_result_is_not_treated_as_failure_of_fast_path(self):
+        """`SEARCH_BLOCKED` la ket qua THAT, khong phai 'duong nhanh hong'.
+
+        Neu coi no la None thi moi lan bi chan se ton them 13s go tay vo ich.
+        """
+        from examtopic import crawler
+        page = MagicMock()
+        with patch.object(crawler, "_search_via_url", return_value=SEARCH_BLOCKED), \
+             patch.object(crawler, "_search_by_typing") as typing:
+            result = crawler.search_engine(page, "q", "duckduckgo")
+        self.assertEqual(result, SEARCH_BLOCKED)
+        typing.assert_not_called()
+
+    def test_unknown_engine_still_errors(self):
+        from examtopic import crawler
+        self.assertEqual(crawler.search_engine(MagicMock(), "q", "khong-ton-tai"), SEARCH_ERROR)
+
+    def test_direct_goto_does_not_wait_load_twice(self):
+        """`goto` da cho domcontentloaded thi khong duoc wait them lan nua.
+
+        Do duoc: cho them lan nua ton ~4s moi lan search.
+        """
+        from examtopic import crawler
+        page = MagicMock()
+        page.query_selector.return_value = None
+        with patch.object(crawler, "_read_search_result") as read, \
+             patch.object(crawler, "_search_is_blocked", return_value=False):
+            read.return_value = SEARCH_OK
+            crawler._search_via_url(page, self._cfg()["duckduckgo"], "q", "duckduckgo")
+        self.assertEqual(page.goto.call_args.kwargs.get("wait_until"), "domcontentloaded")
+        self.assertFalse(read.call_args.kwargs.get("wait_load", True),
+                         "khong duoc wait_for_load_state lan nua")
+
+    def test_typing_path_still_waits_for_load(self):
+        """Duong go tay thi van phai cho load (goto o day dung wait_until mac dinh)."""
+        from examtopic import crawler
+        page = MagicMock()
+        # Phai co o tim kiem that, neu khong ham thoat som truoc khi toi buoc cho load.
+        page.query_selector.return_value = MagicMock()
+        with patch.object(crawler, "safe_goto", return_value=True), \
+             patch.object(crawler, "_search_is_blocked", return_value=False), \
+             patch.object(crawler, "_read_search_result", return_value=SEARCH_OK) as read:
+            crawler._search_by_typing(page, self._cfg()["duckduckgo"], "q", "duckduckgo")
+        read.assert_called_once()
+        self.assertTrue(read.call_args.kwargs.get("wait_load", True))
 
 
 class TestLoadFullComments(unittest.TestCase):
@@ -663,6 +1037,43 @@ class TestRecordError(unittest.TestCase):
         self.assertNotIn("question", errors[0])
 
 
+class TestSameQuestionHelper(unittest.TestCase):
+    """`_same_question` quyet dinh xoa ban ghi loi cu nao khi cau da lay duoc.
+
+    Neu so sanh sai (vd so sanh chuoi voi int), ban ghi loi cu se bi giu lai mai
+    -> file .errors.json bao cau da lay duoc la loi.
+    """
+
+    def test_matches_int_keys(self):
+        from tool import _same_question
+        self.assertTrue(_same_question({"topic": 1, "question_num": 108}, 1, 108))
+
+    def test_matches_string_keys(self):
+        from tool import _same_question
+        self.assertTrue(_same_question({"topic": "1", "question_num": "108"}, 1, 108))
+
+    def test_rejects_other_question_or_topic(self):
+        from tool import _same_question
+        self.assertFalse(_same_question({"topic": 1, "question_num": 107}, 1, 108))
+        self.assertFalse(_same_question({"topic": 2, "question_num": 108}, 1, 108))
+
+    def test_rejects_non_dict(self):
+        from tool import _same_question
+        self.assertFalse(_same_question("boom", 1, 108))
+        self.assertFalse(_same_question(None, 1, 108))
+
+    def test_removes_only_recovered_question(self):
+        """Mo phong buoc don: cau 108 lay duoc thi chi xoa ban ghi loi cua 108."""
+        from tool import _same_question
+        error_records = [
+            {"topic": 1, "question_num": 78, "error": "old"},
+            {"topic": 1, "question_num": 108, "error": "old"},
+            {"topic": 1, "question_num": 98, "error": "old"},
+        ]
+        kept = [r for r in error_records if not _same_question(r, 1, 108)]
+        self.assertEqual([r["question_num"] for r in kept], [78, 98])
+
+
 class TestErrorFileResumeMerge(unittest.TestCase):
     """Lan chay lai phai GIU lai ban ghi loi cu thay vi ghi de .errors.json.
 
@@ -790,6 +1201,210 @@ class TestConvertMalformedData(unittest.TestCase):
         }])
         convert_to_html(path)
         convert_to_docx(path)
+
+
+class TestTopComments(unittest.TestCase):
+    """Cau HOTSPOT/DRAG DROP khong co dap an A/B/C/D -> hien binh luan noi bat.
+
+    Tin hieu dung la so luot upvote THAT cua ExamTopics (`.upvote-count`) va badge
+    "Highly Voted" -- KHONG phai heuristic do tool tu nghi ra. Tool khong tu suy ra
+    dap an: binh luan cong dong hay mau thuan nhau (do tren q8 that: binh luan 24
+    vote chi noi "Seems correct", con binh luan 21 vote moi co dap an), nen doan
+    sai con te hon de trong.
+    """
+
+    def _special(self, top=None):
+        q = {"topic": 1, "question_num": 5, "question": "HOTSPOT - x",
+             "options": [], "suggested_answers": [], "answers": []}
+        if top is not None:
+            q["top_comments"] = top
+        return q
+
+    def _normal(self, top=None):
+        q = {"topic": 1, "question_num": 1, "question": "MC",
+             "options": [{"letter": "A", "text": "a", "images": [], "is_correct": True}],
+             "suggested_answers": ["A"], "answers": []}
+        if top is not None:
+            q["top_comments"] = top
+        return q
+
+    TOP = [
+        {"text": "Yes/Yes/No - da kiem chung", "votes": 61, "user": "Val_0", "badge": "Highly Voted"},
+        {"text": "y kien khac", "votes": 15, "user": "bob", "badge": ""},
+    ]
+
+    def test_cleaner_sorts_by_votes_and_dedupes(self):
+        from examtopic.crawler import _clean_top_comments
+        got = _clean_top_comments([
+            {"text": "thap", "votes": 1, "user": "a", "badge": ""},
+            {"text": "cao", "votes": 50, "user": "b", "badge": "Highly Voted"},
+            {"text": "cao", "votes": 50, "user": "b", "badge": ""},   # trung
+        ])
+        self.assertEqual([c["votes"] for c in got], [50, 1])
+        self.assertEqual(got[0]["text"], "cao")
+
+    def test_cleaner_survives_junk(self):
+        from examtopic.crawler import _clean_top_comments
+        got = _clean_top_comments([
+            None, "rac", {"text": ""}, {"text": "ok", "votes": "khong-phai-so"},
+            {"text": "am", "votes": -5},
+        ])
+        self.assertEqual([c["text"] for c in got], ["ok", "am"])
+        self.assertEqual(got[1]["votes"], 0, "vote am phai bi kep ve 0")
+
+    def test_cleaner_handles_non_list(self):
+        from examtopic.crawler import _clean_top_comments
+        for bad in (None, "x", 5, {"a": 1}):
+            self.assertEqual(_clean_top_comments(bad), [])
+
+    def test_noise_filter_drops_exam_date_bragging(self):
+        """Binh luan chi bao "da gap trong ky thi" phai bi loc bo.
+
+        Do tren du lieu that ms-700 (20 cau dac biet): 15/86 (17%) binh luan noi
+        bat chi la "On exam March 2023" / "On the test Nov, 12 2021"... nhung co
+        vote cao vi nguoi thi roi upvote nhau, trong khi dap an that nam o binh
+        luan IT vote hon. Hien chung se lam loang thong tin huu ich.
+        """
+        from examtopic.crawler import _is_noise_comment
+        noise = [
+            "On exam March 2023",
+            "On the test Nov, 12 2021",
+            "Was on the exam 1/3/23",
+            "on exam 26-Nov-2022",
+            "On test 28.04.2023 (I'm not a bot you can trust me :D)",
+            "On Exam Feb 2023",
+            "Seen on the exam last week",
+            "Took the exam yesterday",
+            "In the exam it was different",
+        ]
+        for t in noise:
+            self.assertTrue(_is_noise_comment(t), f"phai coi la rac: {t!r}")
+
+    def test_noise_filter_keeps_useful_comments(self):
+        """Khong duoc loc nham binh luan co y kien ve dap an."""
+        from examtopic.crawler import _is_noise_comment
+        useful = [
+            "Correct. No, No, Yes. User 3 will get the renewal notification",
+            "Should be -AllowGiphy $false? https://support.microsoft.com/...",
+            'Answer should be "Set-Team -AllowGiphy"',
+            "For a non native speaker, animated images is equal gif, so why not allowgiphy?",
+            "Correct Pureview need E5 compliance license https://example.com",
+            "I passed with 900 but this question is wrong",
+        ]
+        for t in useful:
+            self.assertFalse(_is_noise_comment(t), f"khong duoc coi la rac: {t!r}")
+
+    def test_cleaner_applies_noise_filter(self):
+        from examtopic.crawler import _clean_top_comments
+        got = _clean_top_comments([
+            {"text": "On exam March 2023", "votes": 99, "user": "a", "badge": "Highly Voted"},
+            {"text": "Answer should be B", "votes": 3, "user": "b", "badge": ""},
+        ])
+        self.assertEqual([c["text"] for c in got], ["Answer should be B"],
+                         "binh luan rac vote cao phai bi loai, giu lai binh luan that")
+
+    def test_cleaner_caps_at_five(self):
+        from examtopic.crawler import _clean_top_comments
+        got = _clean_top_comments([{"text": f"c{i}", "votes": i} for i in range(20)])
+        self.assertEqual(len(got), 5)
+        self.assertEqual(got[0]["votes"], 19)
+
+    def test_html_shows_block_for_special_question(self):
+        html_out = build_html([self._special(self.TOP)], "sc-300", embed_images=False)
+        self.assertIn('class="top-comments"', html_out)
+        self.assertIn("61 upvote", html_out)
+        self.assertIn("Highly Voted", html_out)
+        self.assertIn("Val_0", html_out)
+        self.assertIn("không phải đáp án chính thức", html_out)
+
+    def test_html_hides_block_for_normal_question(self):
+        """Cau co dap an A/B/C/D thi KHONG duoc hien khoi binh luan noi bat."""
+        html_out = build_html([self._normal(self.TOP)], "x", embed_images=False)
+        self.assertNotIn('class="top-comments"', html_out)
+
+    def test_html_hides_block_when_no_top_comments(self):
+        html_out = build_html([self._special()], "x", embed_images=False)
+        self.assertNotIn('class="top-comments"', html_out)
+
+    def test_docx_shows_block_for_special_question(self):
+        doc = Document()
+        _add_question_docx(doc, self._special(self.TOP), 5)
+        text = "\n".join(p.text for p in doc.paragraphs)
+        self.assertIn("Bình luận nổi bật", text)
+        self.assertIn("61 upvotes", text)
+        self.assertIn("Highly Voted", text)
+        self.assertIn("không phải đáp án chính thức", text)
+
+    def test_docx_hides_block_for_normal_question(self):
+        doc = Document()
+        _add_question_docx(doc, self._normal(self.TOP), 1)
+        text = "\n".join(p.text for p in doc.paragraphs)
+        self.assertNotIn("Bình luận nổi bật", text)
+
+    def test_top_comments_do_not_become_suggested_answers(self):
+        """Khoa dieu quan trong nhat: tool KHONG duoc tu bien binh luan thanh dap an."""
+        q = self._special(self.TOP)
+        html_out = build_html([q], "x", embed_images=False)
+        self.assertEqual(q["suggested_answers"], [])
+        self.assertIn("Unavailable", html_out, "dap an van phai la Unavailable")
+
+
+class TestAbsolutizeImages(unittest.TestCase):
+    """Anh phai duoc tuyet doi hoa truoc khi luu.
+
+    Duong nap nhanh (HTTP-first) bom HTML vao `about:blank` bang document.write,
+    nen trang KHONG co base URL: `im.src` tra ve nguyen chuoi tuong doi
+    `/assets/media/exam-media/...` nam trong HTML. Lop sau (`_safe_url`) coi do
+    la scheme khong an toan roi loai bo -> ANH MAT AM THAM, khong co loi nao.
+    Do tren du lieu that: 93 anh dang `/assets/...` trong ms700 + sk0005.
+    """
+
+    HREF = ("https://www.examtopics.com/discussions/comptia/view/"
+            "71586-exam-sk0-005-topic-1-question-3-discussion/")
+
+    def _f(self):
+        from examtopic.crawler import _absolutize_images
+        return _absolutize_images
+
+    def test_relative_path_becomes_absolute(self):
+        got = self._f()(["/assets/media/exam-media/04231/0000300001.png"], self.HREF)
+        self.assertEqual(
+            got, ["https://www.examtopics.com/assets/media/exam-media/04231/0000300001.png"])
+
+    def test_absolute_and_data_urls_are_untouched(self):
+        urls = ["https://img.examtopics.com/x.png",
+                "data:image/png;base64,AAA",
+                "//cdn.examtopics.com/x.png"]
+        got = self._f()(urls, self.HREF)
+        self.assertEqual(got[0], "https://img.examtopics.com/x.png")
+        self.assertEqual(got[1], "data:image/png;base64,AAA")
+        self.assertEqual(got[2], "https://cdn.examtopics.com/x.png")
+
+    def test_idempotent(self):
+        """Lan hai khong duoc doi gi (trang nap bang dieu huong that da tuyet doi)."""
+        once = self._f()(["/assets/a.png"], self.HREF)
+        self.assertEqual(self._f()(once, self.HREF), once)
+
+    def test_drops_junk_and_preserves_order(self):
+        got = self._f()(["", None, "/a.png", 123, "/b.png"], self.HREF)
+        self.assertEqual(got, ["https://www.examtopics.com/a.png",
+                               "https://www.examtopics.com/b.png"])
+
+    def test_no_base_url_leaves_value_alone(self):
+        self.assertEqual(self._f()(["/a.png"], None), ["/a.png"])
+        self.assertEqual(self._f()(None, self.HREF), [])
+
+    def test_result_passes_exporter_url_filter(self):
+        """Khoa hanh vi: sau khi tuyet doi hoa, `_safe_url` cua exporter phai giu lai.
+
+        Day moi la dieu lam anh hien ra thay vi bi loai bo am tham.
+        """
+        from examtopic.exporters.html import _safe_url
+        raw = "/assets/media/exam-media/04231/0000300001.png"
+        self.assertEqual(_safe_url(raw), "", "chuoi tuong doi phai bi loai (truoc fix)")
+        fixed = self._f()([raw], self.HREF)[0]
+        self.assertEqual(fixed, _safe_url(fixed))
+        self.assertTrue(fixed.startswith("https://"))
 
 
 class TestDocxFormatting(unittest.TestCase):

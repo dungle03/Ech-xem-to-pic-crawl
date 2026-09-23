@@ -6,6 +6,7 @@ from cloakbrowser import launch
 
 from examtopic import (
     LOG,
+    resolver,
     configure_logging,
     MIN_DELAY,
     MAX_DELAY,
@@ -126,6 +127,18 @@ __all__ = [
     "main",
 ]
 
+def _same_question(record, topic, qnum):
+    """Ban ghi (loi) nay co phai cua dung (topic, question_num) khong.
+
+    So sanh qua as_int vi du lieu cu co the luu topic/question_num dang chuoi;
+    so sanh == truc tiep se coi la khac cau roi giu lai ban ghi loi da cu.
+    """
+    if not isinstance(record, dict):
+        return False
+    return (as_int(record.get("question_num"), -1) == qnum
+            and as_int(record.get("topic"), 1) == topic)
+
+
 def record_error(record, errors):
     """Them mot ban ghi loi vao danh sach loi (ghi ra file .errors.json rieng).
 
@@ -222,6 +235,7 @@ def main():
     # GHI DE file .errors.json va lam mat am tham danh sach cau loi cua cac lan
     # truoc (nguoc lai voi file du lieu chinh da duoc bao toan).
     error_records = load_all(error_path)
+    error_records_loaded = bool(error_records)
     if error_records:
         LOG.info(f"  Nap san {len(error_records)} ban ghi loi tu output/{error_filename}.")
 
@@ -273,6 +287,16 @@ def main():
             LOG.warning("  Canh bao: khong tai duoc DuckDuckGo, van thu crawl tiep.")
         sync_browser_session(page)
 
+        # Nap anchor question_id tu trang exam de cac cau thuoc khoi dau tien giai
+        # duoc bang duong tat dinh (khong can search). Loi o buoc nay khong lam
+        # dung phien: khong co anchor thi tool quay ve dung search nhu truoc.
+        LOG.info("Nap anchor question_id (duong tat dinh)...")
+        try:
+            resolver.load_anchors()
+            resolver.seed_from_exam_page(search_code)
+        except Exception as e:
+            LOG.warning(f"  Khong nap duoc anchor: {e}")
+
         interrupted = False
         aborted = False
         blocked_streak = 0
@@ -309,6 +333,13 @@ def main():
                     upsert(all_data, result)
                     added += 1
                     LOG.info(f"  Luu cau {qnum} vao output/{filename}")
+                    # Xoa ban ghi loi cu cua chinh cau nay: lan truoc khong lay duoc
+                    # (vd search bo sot link) nhung lan nay da lay duoc. Khong xoa thi
+                    # file .errors.json vinh vien bao cau da lay duoc la loi.
+                    kept = [r for r in error_records if not _same_question(r, topic, qnum)]
+                    if len(kept) != len(error_records):
+                        error_records[:] = kept
+                        LOG.info(f"  Da xoa ban ghi loi cu cua cau {qnum} khoi {error_filename}")
                 else:
                     failed.append(qnum)
                     if result is NO_DISCUSSION_BLOCKED:
@@ -360,9 +391,14 @@ def main():
         if failed_blocked:
             LOG.info(f"  Vi search bi chan/CAPTCHA: {', '.join(map(str, failed_blocked))}")
         if failed_missing:
-            LOG.info(f"  Vi thuc su khong co discussion: {', '.join(map(str, failed_missing))}")
+            # Khong khang dinh "thuc su khong co discussion": search engine co the
+            # bo sot (da gap that voi ccaak cau 108/98/85...). Chi bao dung su that
+            # la khong tim thay link nao khop cau.
+            LOG.info(f"  Vi khong tim thay link discussion khop cau: {', '.join(map(str, failed_missing))}")
         LOG.info(f"Ket qua: output/{filename}")
-        if error_records:
+        # Ghi ca khi danh sach loi rong: neu lan nay da lay duoc het cac cau tung
+        # loi thi file .errors.json phai duoc rong theo, khong giu lai ban ghi cu.
+        if error_records or error_records_loaded:
             save_progress(error_records, error_filename)
             LOG.info(f"Cau loi ({len(error_records)}) luu rieng tai output/{error_filename}")
         LOG.info("="*60)

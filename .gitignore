@@ -11,4 +11,9 @@ output/.imgcache/
 output/
 
 # JSON du lieu crawl (sinh tu dong, co the rat lon) -> khong track.
+# Tru file spec cua so do: do la BAN GOC de sua roi render lai, khong phai du lieu sinh ra.
 *.json
+!docs/*.json
+
+# Receipt + anh chup cua `archify visual-check` -> sinh lai duoc trong vai giay.
+docs/crawl-flow.visual-check*

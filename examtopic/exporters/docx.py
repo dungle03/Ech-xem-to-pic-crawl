@@ -214,7 +214,58 @@ def _add_question_docx(doc, q, num, show_topic=False, hide_answers=False):
             run.font.color.rgb = COLOR_ERROR
             run.font.size = Pt(9)
 
+    _add_top_comments_docx(doc, q)
     _add_separator(doc)
+
+
+def _add_top_comments_docx(doc, q):
+    """In binh luan noi bat cho cau KHONG co dap an A/B/C/D (HOTSPOT, DRAG DROP...).
+
+    Sap theo so luot upvote THAT lay tu ExamTopics. Ghi ro day la y kien cong
+    dong, khong phai dap an chinh thuc -- tool khong tu suy ra dap an vi binh
+    luan hay mau thuan nhau.
+    """
+    if (q.get("suggested_answers") or []) or (q.get("options") or []):
+        return
+    top = [c for c in (q.get("top_comments") or []) if isinstance(c, dict)]
+    if not top:
+        return
+    head = doc.add_paragraph()
+    head.paragraph_format.space_before = Pt(4)
+    run = head.add_run("Không có đáp án A/B/C/D cho dạng câu này. "
+                       "Bình luận nổi bật (theo lượt bình chọn của cộng đồng):")
+    run.bold = True
+    run.font.size = Pt(10)
+    run.font.color.rgb = COLOR_HEADING
+    for c in top:
+        votes = as_int(c.get("votes"), 0)
+        badge = str(c.get("badge") or "").strip()
+        user = str(c.get("user") or "").strip()
+        bits = [b for b in (
+            f"{votes} upvote" + ("s" if votes != 1 else "") if votes else "",
+            badge,
+            user,
+        ) if b]
+        meta = doc.add_paragraph(" · ".join(bits))
+        meta.paragraph_format.left_indent = Inches(0.3)
+        meta.paragraph_format.space_after = Pt(2)
+        for r in meta.runs:
+            r.font.size = Pt(8)
+            r.bold = True
+            r.font.color.rgb = COLOR_CORRECT
+        body = doc.add_paragraph(str(c.get("text") or "")[:800])
+        body.paragraph_format.left_indent = Inches(0.3)
+        body.paragraph_format.space_after = Pt(8)
+        for r in body.runs:
+            r.font.size = Pt(9)
+            r.font.color.rgb = COLOR_NOTE
+    note = doc.add_paragraph("Đây là ý kiến cộng đồng, không phải đáp án chính thức. "
+                             "Bình luận có thể mâu thuẫn nhau — hãy tự đối chiếu.")
+    note.paragraph_format.left_indent = Inches(0.3)
+    for r in note.runs:
+        r.font.size = Pt(8)
+        r.italic = True
+        r.font.color.rgb = COLOR_MUTED
 
 
 def convert_to_docx(json_path, hide_answers=False):

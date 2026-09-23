@@ -1,0 +1,269 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Luồng crawl ExamTopics",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1500,
+      420
+    ],
+    "views": [
+      {
+        "id": "chuan-bi",
+        "label": "Chuẩn bị",
+        "focus": [
+          "startup"
+        ],
+        "note": "Nạp cache link cũ và seed 10 anchor từ trang exam trước khi crawl."
+      },
+      {
+        "id": "tim-link",
+        "label": "Bốn tầng tìm link",
+        "focus": [
+          "startup",
+          "resolve",
+          "ddg",
+          "google"
+        ],
+        "note": "Cache, rồi resolver tất định, rồi DuckDuckGo, cuối cùng mới tới Google."
+      },
+      {
+        "id": "nap-boc",
+        "label": "Nạp trang và bóc dữ liệu",
+        "focus": [
+          "nap_boc",
+          "convert"
+        ],
+        "note": "Nạp qua HTTP cho nhanh, bóc và lưu ngay, cuối phiên chuyển sang HTML và DOCX."
+      },
+      {
+        "id": "ket-thuc",
+        "label": "Nhánh lỗi",
+        "focus": [
+          "no_link",
+          "google"
+        ],
+        "note": "Câu không có link bị ghi vào file lỗi riêng, không trộn vào file dữ liệu chính."
+      }
+    ],
+    "legend": {
+      "mode": "auto",
+      "entries": {
+        "frontend": {
+          "label": "Giao diện"
+        },
+        "backend": {
+          "label": "Xử lý nội bộ"
+        },
+        "database": {
+          "label": "Lưu trữ"
+        },
+        "cloud": {
+          "label": "Dịch vụ ngoài"
+        },
+        "security": {
+          "label": "Kiểm soát"
+        },
+        "messagebus": {
+          "label": "Hàng đợi"
+        },
+        "external": {
+          "label": "Hệ thống ngoài"
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "chinh",
+      "label": "Luồng chính"
+    },
+    {
+      "id": "du_phong",
+      "label": "Nhánh dự phòng",
+      "variant": "exception"
+    }
+  ],
+  "phases": [
+    {
+      "id": "p_chuan_bi",
+      "label": "Chuẩn bị",
+      "fromCol": 0,
+      "toCol": 0
+    },
+    {
+      "id": "p_tim",
+      "label": "Tìm link",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "p_xuat",
+      "label": "Bóc và xuất",
+      "fromCol": 4,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "groups": [
+    {
+      "id": "g_search",
+      "label": "Chỉ chạy khi resolver thất bại",
+      "lane": "du_phong",
+      "fromCol": 2,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "startup",
+    "resolve",
+    "nap_boc",
+    "convert"
+  ],
+  "nodes": [
+    {
+      "id": "startup",
+      "lane": "chinh",
+      "col": 0,
+      "type": "external",
+      "label": "Khởi động",
+      "sublabel": "cache + seed"
+    },
+    {
+      "id": "resolve",
+      "lane": "chinh",
+      "col": 2,
+      "type": "security",
+      "label": "Resolver",
+      "sublabel": "verify title"
+    },
+    {
+      "id": "nap_boc",
+      "lane": "chinh",
+      "col": 4,
+      "type": "backend",
+      "label": "Nạp & bóc",
+      "sublabel": "HTTP ~2s"
+    },
+    {
+      "id": "convert",
+      "lane": "chinh",
+      "col": 5,
+      "type": "frontend",
+      "label": "Convert",
+      "sublabel": "HTML + DOCX"
+    },
+    {
+      "id": "ddg",
+      "lane": "du_phong",
+      "col": 2,
+      "type": "external",
+      "label": "DuckDuckGo",
+      "sublabel": "URL trực tiếp"
+    },
+    {
+      "id": "google",
+      "lane": "du_phong",
+      "col": 4,
+      "type": "external",
+      "label": "Google",
+      "sublabel": "DDG hết cách"
+    },
+    {
+      "id": "no_link",
+      "lane": "du_phong",
+      "col": 5,
+      "type": "security",
+      "label": "Bỏ qua",
+      "sublabel": "file lỗi"
+    }
+  ],
+  "edges": [
+    {
+      "from": "startup",
+      "to": "resolve",
+      "variant": "emphasis",
+      "role": "main",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "from": "resolve",
+      "to": "nap_boc",
+      "label": "title khớp",
+      "variant": "emphasis",
+      "role": "main",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "from": "nap_boc",
+      "to": "convert",
+      "variant": "emphasis",
+      "role": "main",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "from": "resolve",
+      "to": "ddg",
+      "label": "thất bại",
+      "variant": "dashed",
+      "role": "branch",
+      "route": "drop",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "ddg",
+      "to": "google",
+      "variant": "dashed",
+      "role": "branch",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "from": "google",
+      "to": "no_link",
+      "variant": "security",
+      "role": "error",
+      "fromSide": "right",
+      "toSide": "left"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Tìm link: bốn tầng giảm dần",
+      "items": [
+        "Cache link cũ: dùng lại URL đã crawl, không tốn request",
+        "Resolver: AJAX question_id, verify title, không search",
+        "DuckDuckGo bằng URL trực tiếp ~2s, gõ tay là dự phòng",
+        "Google chỉ gọi khi DuckDuckGo đã hết cách"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Vì sao chạy lại càng nhanh",
+      "items": [
+        "Mỗi câu crawl xong tự ghi question_id vào .anchors.json",
+        "question_id liên mạch theo khối nên giải được cả khối",
+        "Chạy lại đề đã crawl gần như không cần search",
+        "Lần chạy lại ccaak: 91/91 câu đi đường tất định"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Giới hạn đã đo",
+      "items": [
+        "Phân trang view/2 bị CAPTCHA nên không lấy thêm anchor",
+        "Đề nhiều topic: trang exam chỉ lộ topic 1",
+        "Đề bị chặn trang exam vẫn chạy nhờ anchor từ link cũ",
+        "Câu ngoài khối đã biết vẫn phải search một lần"
+      ]
+    }
+  ]
+}
