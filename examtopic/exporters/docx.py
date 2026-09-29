@@ -227,16 +227,24 @@ def _add_top_comments_docx(doc, q):
     """
     if (q.get("suggested_answers") or []) or (q.get("options") or []):
         return
+    type_note = {
+        "hotspot": "Dạng câu HOTSPOT (chọn trong vùng ảnh) — không có đáp án A/B/C/D.",
+        "drag-drop": "Dạng câu DRAG DROP (kéo thả) — không có đáp án A/B/C/D.",
+        "selection": "Dạng câu điền/chọn trong answer area — không có đáp án A/B/C/D.",
+    }.get(str(q.get("question_type") or ""), "Câu này không có đáp án A/B/C/D.")
     top = [c for c in (q.get("top_comments") or []) if isinstance(c, dict)]
-    if not top:
-        return
     head = doc.add_paragraph()
     head.paragraph_format.space_before = Pt(4)
-    run = head.add_run("Không có đáp án A/B/C/D cho dạng câu này. "
-                       "Bình luận nổi bật (theo lượt bình chọn của cộng đồng):")
+    if top:
+        run = head.add_run(f"{type_note} "
+                           "Bình luận nổi bật (theo lượt bình chọn của cộng đồng):")
+    else:
+        run = head.add_run(f"{type_note} Không có bình luận cộng đồng cho câu này.")
     run.bold = True
     run.font.size = Pt(10)
     run.font.color.rgb = COLOR_HEADING
+    if not top:
+        return
     for c in top:
         votes = as_int(c.get("votes"), 0)
         badge = str(c.get("badge") or "").strip()

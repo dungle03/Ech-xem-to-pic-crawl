@@ -483,7 +483,13 @@ body:not(.answers-hidden) .answer-reveal { display: none; }
         # KHONG tu suy ra dap an: binh luan cong dong hay mau thuan nhau, doan sai
         # con te hon de trong.
         top_html = ""
+        qtype = question.get("question_type") or ""
         if not suggested and not opt_list:
+            type_note = {
+                "hotspot": "Dạng câu HOTSPOT (chọn trong vùng ảnh) — không có đáp án A/B/C/D.",
+                "drag-drop": "Dạng câu DRAG DROP (kéo thả) — không có đáp án A/B/C/D.",
+                "selection": "Dạng câu điền/chọn trong answer area — không có đáp án A/B/C/D.",
+            }.get(qtype, "Câu này không có đáp án A/B/C/D.")
             top = [c for c in (question.get("top_comments") or []) if isinstance(c, dict)]
             if top:
                 items = []
@@ -502,11 +508,20 @@ body:not(.answers-hidden) .answer-reveal { display: none; }
                     )
                 top_html = (
                     '<div class="top-comments">'
-                    '<p class="top-title">Không có đáp án A/B/C/D cho dạng câu này. '
+                    f'<p class="top-title">{type_note} '
                     'Bình luận nổi bật (theo lượt bình chọn của cộng đồng):</p>'
                     f'<ol>{"".join(items)}</ol>'
                     '<p class="top-note">Đây là ý kiến cộng đồng, không phải đáp án chính thức. '
                     'Bình luận có thể mâu thuẫn nhau — hãy tự đối chiếu.</p>'
+                    '</div>'
+                )
+            else:
+                # Khong co ca binh luan: van phai noi ro vi sao khong co lua chon,
+                # de nguoi doc khong tuong tool loi.
+                top_html = (
+                    '<div class="top-comments">'
+                    f'<p class="top-title">{type_note}</p>'
+                    '<p class="top-note">Không có bình luận cộng đồng cho câu này.</p>'
                     '</div>'
                 )
 

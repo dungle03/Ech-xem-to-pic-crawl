@@ -454,18 +454,16 @@ class TestFindDiscussionLinkQueryFallback(unittest.TestCase):
 
 
 class TestDeterministicResolver(unittest.TestCase):
-    """Bo giai TAT DINH: qnum -> URL discussion khong dung search engine.
+    """Bo giai URL discussion khong dung search engine.
 
-    Cơ che (do tren du lieu that cua ccaak):
-      - `/exams/<bat-ky>/<code>/view/1/` lo ra 10 question_id dau (category
-        trong URL la cosmetic nen khong can biet vendor).
-      - `/ajax/discussion/exam-question/<question_id>` tra ve discussion_id +
-        title => vua lay duoc URL vua VERIFY duoc dung de/topic/cau.
-      - question_id lien mach theo khoi: ccaak q1..q54 -> 949311..949364,
-        q55..q109 -> 977877..977931.
-
-    Nho do: 1 anchor moi khoi la giai duoc ca khoi, va doan sai bi loai bo nho
-    doi chieu title -- khong bao gio tra ve link cua cau khac.
+    Cơ che THAT (do tren trang song, 9/2026):
+      - `/search/?q=<ma-de>` -> link `/exams/<category>/<slug>/`, tu do biet
+        CATEGORY that. Category BAT BUOC: `/exams/<slug>/<slug>/` da thanh 404.
+      - `/discussions/<category>/<n>/` liet ke moi discussion cua vendor kem URL
+        day du => day la nguon chinh thay cho AJAX da chet.
+      - `/ajax/discussion/exam-question/<id>`: 404 moi id (da bo).
+      - `data-id` tren trang discussion: HANG SO `825909` cho moi cau/moi de
+        (khong con dung lam anchor duoc).
     """
 
     def setUp(self):
@@ -474,151 +472,205 @@ class TestDeterministicResolver(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self._old = resolver.OUTPUT_DIR
         resolver.OUTPUT_DIR = self.tmp
-        resolver.clear_anchors()
+        resolver.clear_index()
         self.addCleanup(self._restore)
 
     def _restore(self):
         self.R.OUTPUT_DIR = self._old
-        self.R.clear_anchors()
+        self.R.clear_index()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_parse_title_extracts_code_topic_question(self):
-        self.assertEqual(self.R.parse_title("Exam CCAAK topic 1 question 108 discussion"),
-                         ("ccaak", 1, 108))
-        self.assertEqual(self.R.parse_title("Exam SC-300 topic 2 question 131 discussion"),
-                         ("sc300", 2, 131))
-        self.assertIsNone(self.R.parse_title("Exam CCAAK topic 1 question 108"))
+    # -- slug / URL ------------------------------------------------------
+    def test_discussion_url_keeps_hyphen_in_exam_slug(self):
+        """Gach ngang trong ma de PHAI duoc giu.
 
-    def test_question_id_from_html(self):
-        html = ('<div class="question-body mt-3 pt-3 border-top" '
-                'data-id="977931"><p>hi</p></div>')
-        self.assertEqual(self.R.question_id_from_html(html), 977931)
-        self.assertIsNone(self.R.question_id_from_html("<html>nothing</html>"))
-        self.assertIsNone(self.R.question_id_from_html(""))
-
-    def test_discussion_url_uses_real_category(self):
-        url = self.R.discussion_url("382176", "ccaak", 1, 108, category="confluent")
+        Do tren trang that: `-exam-hqt-4180-topic-` -> 200, con
+        `-exam-hqt4180-topic-` -> 404. Ban cu dung `canonical_exam_code` (xoa het
+        ky tu khong phai chu/so) nen moi ma de co gach ngang sinh URL chet.
+        """
+        url = self.R.discussion_url("99394", "hqt-4180", 1, 5, category="hitachi")
         self.assertEqual(
             url,
-            "https://www.examtopics.com/discussions/confluent/view/"
-            "382176-exam-ccaak-topic-1-question-108-discussion/")
+            "https://www.examtopics.com/discussions/hitachi/view/"
+            "99394-exam-hqt-4180-topic-1-question-5-discussion/")
 
-    def test_discussion_url_strips_dots_from_exam_slug(self):
-        """Dau CHAM trong slug ma de lam server tra 404 -> URL chet.
+    def test_discussion_url_strips_dots_and_underscores(self):
+        """Dau CHAM/GACH DUOI thi nguoc lai: site doi thanh gach ngang.
 
-        Do tren trang that: `/view/<id>-exam-h12-711_v4.0-...` -> 404, con
-        `/view/<id>-exam-h12711v40-...` -> 200. Truoc day ham nay dung
-        `normalize_exam_code` (giu `_` va `.`) nen moi ma de co dau cham
-        (H12-711_V4.0, H12-411_V2.0, FCSS_NST_SE-7.6) sinh URL chet, khien
-        tool bao "khong lay duoc cau hoi" cho cau hoi ton tai that.
+        `H12-711_V4.0` -> `h12-711-v4-0` (200), khong phai `h12-711_v4.0` (404).
         """
         for code, expected_slug in (
-            ("H12-711_V4.0", "h12711v40"),
-            ("H12-411_V2.0", "h12411v20"),
-            ("FCSS_NST_SE-7.6", "fcssnstse76"),
-            ("sk0-005", "sk0005"),
+            ("H12-711_V4.0", "h12-711-v4-0"),
+            ("H12-411_V2.0", "h12-411-v2-0"),
+            ("FCSS_NST_SE-7.6", "fcss-nst-se-7-6"),
+            ("sk0-005", "sk0-005"),
+            ("ccaak", "ccaak"),
         ):
             url = self.R.discussion_url("325747", code, 1, 1, category="huawei")
-            tail = url.split("/view/", 1)[1]
             self.assertIn(f"-exam-{expected_slug}-topic-1-question-1-discussion/", url)
-            self.assertNotIn(".", tail, f"slug ma de khong duoc chua dau cham: {url}")
-            self.assertNotIn("_", tail, f"slug ma de khong duoc chua gach duoi: {url}")
 
-    def test_discussion_url_category_slot_accepts_any_form(self):
-        """Category la cosmetic (dien gi cung 200) - chuan hoa cho gon, khong hong URL."""
-        url = self.R.discussion_url("325747", "H12-711_V4.0", 1, 1, category="huawei")
-        self.assertTrue(url.startswith(
-            "https://www.examtopics.com/discussions/huawei/view/"))
+    def test_slug_variants_cover_dotted_codes(self):
+        """Phai thu ca dang gach ngang lan dang bo dau cham, khong doan bua."""
+        variants = self.R.exam_slug_variants("H12-711_V4.0")
+        self.assertIn("h12-711-v4-0", variants)
+        self.assertIn("h12-711v40", variants)
+        self.assertIn("h12-711_v4.0", variants)
+        self.assertIn("h12711v40", variants)
+        # Ma de co gach ngang: ban dau tien phai giu nguyen gach ngang.
+        self.assertEqual(self.R.exam_slug_variants("hqt-4180")[0], "hqt-4180")
 
-    def test_resolve_uses_nearest_anchor_and_verifies(self):
-        """q18 = q1 + 17 => 949328, va title phai khop moi duoc tra ve."""
-        self.R.record_anchor("ccaak", 1, 1, 949311)
+    # -- category --------------------------------------------------------
+    def test_discover_category_reads_search_results(self):
+        """Category duoc doc tu link `/exams/<cat>/<slug>/` trong ket qua search."""
+        html = ('<a href="https://www.examtopics.com/exams/hitachi/hqt-4180/view/1/">'
+                'HQT-4180</a>')
+        with patch.object(self.R, "fetch_html", return_value=html):
+            self.assertEqual(self.R.discover_category("hqt-4180"), "hitachi")
+        self.assertEqual(self.R.CATEGORY["hqt4180"], "hitachi")
 
-        def fake_ajax(qid):
-            if qid == 949328:
-                return "314606", "Exam CCAAK topic 1 question 18 discussion"
-            return None
+    def test_discover_category_rejects_other_exam(self):
+        """Link cua de khac khong duoc nhan lam category."""
+        html = '<a href="https://www.examtopics.com/exams/hitachi/hqt-4420/view/1/">x</a>'
+        with patch.object(self.R, "fetch_html", return_value=html):
+            self.assertIsNone(self.R.discover_category("hqt-4180"))
 
-        with patch.object(self.R, "ajax_lookup", side_effect=fake_ajax):
-            url = self.R.resolve("ccaak", 1, 18)
-        self.assertIn("314606-exam-ccaak-topic-1-question-18-discussion", url)
-
-    def test_resolve_rejects_wrong_question(self):
-        """Doan ra cau KHAC thi phai bo qua, khong tra ve link sai."""
-        self.R.record_anchor("ccaak", 1, 1, 949311)
-
-        def fake_ajax(qid):
-            # Tra ve title cua cau 999 -> khong khop cau 18 dang tim.
-            return "111111", "Exam CCAAK topic 1 question 999 discussion"
-
-        with patch.object(self.R, "ajax_lookup", side_effect=fake_ajax):
-            self.assertIsNone(self.R.resolve("ccaak", 1, 18))
-
-    def test_resolve_rejects_different_exam(self):
-        """Cung so cau nhung khac ma de thi khong duoc nhan."""
-        self.R.record_anchor("ccaak", 1, 1, 949311)
-
-        def fake_ajax(qid):
-            return "92443", "Exam CCAK topic 1 question 18 discussion"
-
-        with patch.object(self.R, "ajax_lookup", side_effect=fake_ajax):
-            self.assertIsNone(self.R.resolve("ccaak", 1, 18))
-
-    def test_resolve_returns_none_without_anchor(self):
-        """Khong co anchor nao -> tra None de caller rot ve search."""
-        with patch.object(self.R, "seed_from_exam_page", return_value=0):
-            self.assertIsNone(self.R.resolve("ccaak", 1, 108))
-
-    def test_one_anchor_unlocks_whole_block(self):
-        """1 anchor o khoi 2 phai giai duoc moi cau trong khoi do.
-
-        Khoi 2 cua ccaak: q55 -> 977877 ... q109 -> 977931 (lien mach), nen
-        q78 = 977877+23 = 977900 va q85 = 977877+30 = 977907.
-        """
-        self.R.record_anchor("ccaak", 1, 109, 977931)
-        table = {977900: ("382212", 78), 977907: ("382210", 85),
-                 977931: ("382204", 109)}
-
-        def fake_ajax(qid):
-            if qid in table:
-                did, q = table[qid]
-                return did, f"Exam CCAAK topic 1 question {q} discussion"
-            return None
-
-        with patch.object(self.R, "ajax_lookup", side_effect=fake_ajax):
-            self.assertIn("382212-exam-ccaak-topic-1-question-78-discussion",
-                          self.R.resolve("ccaak", 1, 78))
-            self.assertIn("382210-exam-ccaak-topic-1-question-85-discussion",
-                          self.R.resolve("ccaak", 1, 85))
-
-    def test_anchors_persist_across_runs(self):
-        """Anchor phai song qua lan chay sau (doc lai tu dia)."""
-        self.R.record_anchor("ccaak", 1, 108, 977930)
-        self.R.clear_anchors()
-        self.R.load_anchors()
-        self.assertEqual(self.R.ANCHORS["ccaak"][(1, 108)], 977930)
-
-    def test_corrupt_anchor_file_does_not_crash(self):
-        with open(self.R._anchor_path(), "w", encoding="utf-8") as f:
-            f.write("{not json")
-        self.R.clear_anchors()
-        self.assertEqual(self.R.load_anchors(), {})
-
-    def test_seed_parses_exam_page(self):
-        """Trang exam that co dang: Question #N ... Topic M ... data-id."""
+    # -- harvest listing -------------------------------------------------
+    def test_harvest_listing_indexes_real_urls(self):
+        """Moi muc trong trang liet ke vendor phai duoc ghi thanh URL that."""
         html = (
-            '<div class="card-header">Question #1 '
-            '<span class="question-title-topic pull-right">Topic 1</span></div>'
-            '<div class="card-body question-body" data-id="949311">q</div>'
-            '<div class="card-header">Question #2 '
-            '<span class="question-title-topic pull-right">Topic 1</span></div>'
-            '<div class="card-body question-body" data-id="949312">q</div>'
+            '<a href="/discussions/hitachi/view/99394-exam-hqt-4180-topic-1-question-5-discussion/">'
+            'q5</a>'
+            '<a href="/discussions/hitachi/view/110755-exam-hqt-4180-topic-1-question-17-discussion/">'
+            'q17</a>'
+            '<span>Page <strong>1</strong> of <strong>1</strong></span>'
         )
-        with patch.object(self.R, "_http_get", return_value=html):
-            added = self.R.seed_from_exam_page("ccaak")
+        with patch.object(self.R, "fetch_html", return_value=html):
+            added = self.R.harvest_listing("hitachi")
         self.assertEqual(added, 2)
-        self.assertEqual(self.R.ANCHORS["ccaak"][(1, 1)], 949311)
-        self.assertEqual(self.R.ANCHORS["ccaak"][(1, 2)], 949312)
+        self.assertEqual(
+            self.R.INDEX["hqt4180"][(1, 5)],
+            "https://www.examtopics.com/discussions/hitachi/view/"
+            "99394-exam-hqt-4180-topic-1-question-5-discussion/")
+        self.assertEqual(
+            self.R.INDEX["hqt4180"][(1, 17)],
+            "https://www.examtopics.com/discussions/hitachi/view/"
+            "110755-exam-hqt-4180-topic-1-question-17-discussion/")
+
+    def test_harvest_listing_stops_at_last_page(self):
+        """Gap `Page 1 of 1` thi dung, khong quet them trang vo ich."""
+        html = ('<a href="/discussions/hitachi/view/1-exam-hqt-4180-topic-1-question-1-discussion/">x</a>'
+                '<span>Page <strong>1</strong> of <strong>1</strong></span>')
+        with patch.object(self.R, "fetch_html", return_value=html) as mock:
+            self.R.harvest_listing("hitachi")
+        self.assertEqual(mock.call_count, 1)
+
+    def test_harvest_listing_handles_empty_page(self):
+        with patch.object(self.R, "fetch_html", return_value="<html></html>"):
+            self.assertEqual(self.R.harvest_listing("hitachi"), 0)
+
+    def test_harvest_listing_does_not_rescan_same_category(self):
+        """Quet lai cung category la lang phi: cau khong co trong listing se
+        khien moi cau deu quet lai toan bo -> ton request vo ich moi cau."""
+        html = ('<a href="/discussions/hitachi/view/1-exam-hqt-4180-topic-1-question-1-discussion/">x</a>'
+                '<span>Page <strong>1</strong> of <strong>1</strong></span>')
+        with patch.object(self.R, "fetch_html", return_value=html) as mock:
+            self.R.harvest_listing("hitachi")
+            first = mock.call_count
+            self.assertEqual(self.R.harvest_listing("hitachi"), 0)
+        self.assertEqual(mock.call_count, first, "khong duoc quet lai category da quet")
+
+    # -- resolve ---------------------------------------------------------
+    def test_resolve_uses_index(self):
+        """Co URL trong chi muc thi tra ve ngay, khong goi mang."""
+        self.R.INDEX["hqt4180"] = {(1, 5): "https://example.test/q5/"}
+        with patch.object(self.R, "fetch_html") as mock:
+            self.assertEqual(self.R.resolve("hqt-4180", 1, 5), "https://example.test/q5/")
+        mock.assert_not_called()
+
+    def test_resolve_harvests_when_index_empty(self):
+        """Chi muc trong -> tu tim category roi quet listing, sau do tra cuu lai."""
+        listing = ('<a href="/discussions/hitachi/view/99394-exam-hqt-4180-topic-1-question-5-discussion/">x</a>'
+                   '<span>Page <strong>1</strong> of <strong>1</strong></span>')
+        search = '<a href="https://www.examtopics.com/exams/hitachi/hqt-4180/view/1/">x</a>'
+
+        def fake(url, params=None, timeout=25):
+            if "search" in url:
+                return search
+            return listing
+
+        with patch.object(self.R, "fetch_html", side_effect=fake):
+            url = self.R.resolve("hqt-4180", 1, 5)
+        self.assertIn("99394-exam-hqt-4180-topic-1-question-5-discussion", url)
+
+    def test_resolve_returns_none_for_unknown_question(self):
+        """Cau khong co trong chi muc -> None de caller rot ve search."""
+        self.R.INDEX["hqt4180"] = {(1, 5): "https://example.test/q5/"}
+        with patch.object(self.R, "discover_category", return_value="hitachi"), \
+             patch.object(self.R, "harvest_listing", return_value=0):
+            self.assertIsNone(self.R.resolve("hqt-4180", 1, 99))
+
+    def test_resolve_returns_none_without_category(self):
+        with patch.object(self.R, "discover_category", return_value=None):
+            self.assertIsNone(self.R.resolve("hqt-4180", 1, 5))
+
+    def test_resolve_skips_dead_url_so_caller_falls_back_to_search(self):
+        """Link chet trong chi muc KHONG duoc tra ve, de caller roi xuong search.
+
+        Day la bug that: neu chi xoa cache search thi `resolve()` van tra lai dung
+        link chet tu INDEX -> `find_discussion_link` return ngay va KHONG BAO GIO
+        search DDG/Google -> cau hoi that bi coi la "khong lay duoc".
+        """
+        dead = "https://www.examtopics.com/discussions/hitachi/view/337637-exam-hqt-4180-topic-1-question-43-discussion/"
+        self.R.INDEX["hqt4180"] = {(1, 43): dead}
+        self.R._HARVESTED.add("hitachi")
+        self.assertIsNotNone(self.R.resolve("hqt-4180", 1, 43),
+                             "truoc khi biet chet thi van tra ve binh thuong")
+        self.R.mark_url_dead(dead, "hqt-4180", 1, 43)
+        self.assertIsNone(self.R.resolve("hqt-4180", 1, 43),
+                          "sau khi biet chet thi phai tra None de roi xuong search")
+
+    def test_mark_url_dead_removes_from_index(self):
+        dead = "https://x.test/dead/"
+        self.R.INDEX["hqt4180"] = {(1, 43): dead, (1, 44): "https://x.test/ok/"}
+        self.assertTrue(self.R.mark_url_dead(dead, "hqt-4180", 1, 43))
+        self.assertNotIn((1, 43), self.R.INDEX["hqt4180"])
+        self.assertIn((1, 44), self.R.INDEX["hqt4180"], "cau khac khong bi anh huong")
+
+    def test_is_dead_expires(self):
+        url = "https://x.test/maybe/"
+        self.R.mark_url_dead(url)
+        self.assertTrue(self.R.is_dead(url))
+        self.R._DEAD_URLS[url] = 0.0  # gia lap cooldown da het
+        self.assertFalse(self.R.is_dead(url))
+
+    # -- answer key ------------------------------------------------------
+    def test_parse_answer_key_from_exam_page(self):
+        """Trang exam boc dap an chinh thuc theo tung card `id="qqqN"`."""
+        html = (
+            '<div id="qqq1"><div>Correct Answer: <strong>AD</strong></div></div>'
+            '<div id="qqq2"><div>Correct Answer: <strong class="ml-1">BDE</strong></div></div>'
+            '<div id="qqq3"><div>no answer here</div></div>'
+        )
+        self.assertEqual(self.R._parse_answer_key(html), {1: "AD", 2: "BDE"})
+
+    # -- persistence -----------------------------------------------------
+    def test_index_persists_across_runs(self):
+        self.R.INDEX["hqt4180"] = {(1, 5): "https://example.test/q5/"}
+        self.R.CATEGORY["hqt4180"] = "hitachi"
+        self.R.ANSWER_KEY["hqt4180"] = {1: "AD"}
+        self.R._mark_dirty()
+        self.R.save_index()
+        self.R.clear_index()
+        self.R.load_index()
+        self.assertEqual(self.R.INDEX["hqt4180"][(1, 5)], "https://example.test/q5/")
+        self.assertEqual(self.R.CATEGORY["hqt4180"], "hitachi")
+        self.assertEqual(self.R.ANSWER_KEY["hqt4180"], {1: "AD"})
+
+    def test_corrupt_index_file_does_not_crash(self):
+        with open(self.R._index_path(), "w", encoding="utf-8") as f:
+            f.write("{not json")
+        self.R.clear_index()
+        self.assertEqual(self.R.load_index(), {})
 
     def test_find_discussion_link_prefers_deterministic_path(self):
         """Co link tat dinh thi KHONG duoc goi search engine nao."""
@@ -633,6 +685,63 @@ class TestDeterministicResolver(unittest.TestCase):
         mock_search.assert_not_called()
 
 
+class TestForgetHarvestedLink(unittest.TestCase):
+    """Link hong phai duoc xoa khoi cache, neu khong moi retry dam vao dung
+    mot URL chet -> 3 lan thu vo ich cho mot cau (dung nhu loi ban cu)."""
+
+    def setUp(self):
+        _HARVESTED_LINKS.clear()
+        self.addCleanup(_HARVESTED_LINKS.clear)
+
+    def test_removes_cached_link(self):
+        from examtopic.crawler import forget_harvested_link
+        _HARVESTED_LINKS[("hqt4180", 1, 32)] = "https://x.test/dead/"
+        self.assertTrue(forget_harvested_link("hqt-4180", 1, 32))
+        self.assertNotIn(("hqt4180", 1, 32), _HARVESTED_LINKS)
+
+    def test_returns_false_when_absent(self):
+        from examtopic.crawler import forget_harvested_link
+        self.assertFalse(forget_harvested_link("hqt-4180", 1, 99))
+
+    def test_handles_garbage_input(self):
+        from examtopic.crawler import forget_harvested_link
+        self.assertFalse(forget_harvested_link("hqt-4180", "abc", None))
+
+
+class TestOptionSplitting(unittest.TestCase):
+    """Trang discussion khong con markup lua chon -> phai tach tu text de bai."""
+
+    def test_splits_options_from_question_text(self):
+        from examtopic.crawler import _split_options_from_text
+        text = ("Which three RAID configurations are supported? (Choose three.)\n\n"
+                "A. 2D + 2D\n\nB. 4D + 1P\n\nC. 7D + 1P")
+        stem, opts = _split_options_from_text(text)
+        self.assertEqual(stem, "Which three RAID configurations are supported? (Choose three.)")
+        self.assertEqual([o["letter"] for o in opts], ["A", "B", "C"])
+        self.assertEqual(opts[0]["text"], "2D + 2D")
+        self.assertEqual(opts[2]["text"], "7D + 1P")
+
+    def test_does_not_split_when_letters_not_sequential(self):
+        """Chi tach khi A,B,C... LIEN TIEP tu A - tranh cat nham cau co 'A.' trong de."""
+        from examtopic.crawler import _split_options_from_text
+        text = "A drive in a 3D + 1P RAID group fails. C. The RAID group is degraded."
+        stem, opts = _split_options_from_text(text)
+        self.assertEqual(stem, text)
+        self.assertEqual(opts, [])
+
+    def test_does_not_split_plain_question(self):
+        from examtopic.crawler import _split_options_from_text
+        text = "What is the recommended RAID level?"
+        stem, opts = _split_options_from_text(text)
+        self.assertEqual(stem, text)
+        self.assertEqual(opts, [])
+
+    def test_handles_empty_text(self):
+        from examtopic.crawler import _split_options_from_text
+        self.assertEqual(_split_options_from_text(""), ("", []))
+        self.assertEqual(_split_options_from_text(None), (None, []))
+
+
 class TestProxyConfiguration(unittest.TestCase):
     def test_set_proxy(self):
         set_proxy("http://127.0.0.1:8888")
@@ -645,18 +754,17 @@ class TestProxyConfiguration(unittest.TestCase):
         luc import) nen set_proxy() sau do khong den duoc HTTP fallback -> am
         tham bo qua proxy, lo IP that.
 
-        Test nay kiem tra HANH VI quan sat duoc: gia tri `proxy=` thuc su truyen
-        vao httpx.get() cua load_discussion_via_http, chu khong chi doc thuoc
-        tinh noi bo.
+        HTTP fallback nay di qua `resolver.fetch_html` (no giu duong gian nhip
+        + retry dung chung), nen proxy phai duoc doc TAI THOI DIEM GOI tu
+        `config._PROXY`, khong phai copy luc import.
         """
-        from examtopic.crawler import load_discussion_via_http
+        from examtopic import resolver
         set_proxy("http://127.0.0.1:7777")
         try:
-            tab = MagicMock()
-            tab.query_selector.return_value = MagicMock()
-            resp = MagicMock(status_code=200, text="<div class='discussion-header-container'></div>")
-            with patch("examtopic.crawler.httpx.get", return_value=resp) as mock_get:
-                load_discussion_via_http(tab, "https://x.test")
+            resp = MagicMock(status_code=200, text="<html>x</html>")
+            resp.headers = {}
+            with patch("examtopic.resolver.httpx.get", return_value=resp) as mock_get:
+                resolver.fetch_html("https://x.test/proxy1")
             self.assertEqual(mock_get.call_count, 1)
             self.assertEqual(
                 mock_get.call_args.kwargs.get("proxy"), "http://127.0.0.1:7777",
@@ -667,14 +775,30 @@ class TestProxyConfiguration(unittest.TestCase):
 
     def test_http_fallback_has_no_proxy_by_default(self):
         """Mac dinh khong set proxy thi httpx.get phai nhan proxy=None."""
-        from examtopic.crawler import load_discussion_via_http
+        from examtopic import resolver
         set_proxy(None)
+        resp = MagicMock(status_code=200, text="<html>x</html>")
+        resp.headers = {}
+        with patch("examtopic.resolver.httpx.get", return_value=resp) as mock_get:
+            resolver.fetch_html("https://x.test/proxy2")
+        self.assertIsNone(mock_get.call_args.kwargs.get("proxy"))
+
+    def test_http_fallback_loads_discussion_into_tab(self):
+        """load_discussion_via_http phai bom HTML lay duoc vao tab."""
+        from examtopic.crawler import load_discussion_via_http
         tab = MagicMock()
         tab.query_selector.return_value = MagicMock()
-        resp = MagicMock(status_code=200, text="<div class='discussion-header-container'></div>")
-        with patch("examtopic.crawler.httpx.get", return_value=resp) as mock_get:
-            load_discussion_via_http(tab, "https://x.test")
-        self.assertIsNone(mock_get.call_args.kwargs.get("proxy"))
+        with patch("examtopic.resolver.fetch_html_status",
+                   return_value=("<div class='discussion-header-container'></div>", 200)):
+            self.assertTrue(load_discussion_via_http(tab, "https://x.test"))
+        tab.evaluate.assert_called_once()
+
+    def test_http_fallback_returns_false_when_fetch_fails(self):
+        """Khong lay duoc HTML thi phai bao that bai de caller rot ve browser."""
+        from examtopic.crawler import load_discussion_via_http
+        tab = MagicMock()
+        with patch("examtopic.resolver.fetch_html_status", return_value=(None, 429)):
+            self.assertFalse(load_discussion_via_http(tab, "https://x.test"))
 
 
 class TestSearchFastPath(unittest.TestCase):
@@ -775,131 +899,33 @@ class TestSearchFastPath(unittest.TestCase):
         self.assertTrue(read.call_args.kwargs.get("wait_load", True))
 
 
-class TestLoadFullComments(unittest.TestCase):
-    """Trang discussion chi render san ~20-25 binh luan dau; phan con lai nam
-    sau nut "Load full discussion..." va chi lay duoc qua AJAX load-complete.
+class TestRemovedDeadMechanisms(unittest.TestCase):
+    """Khoa lai su that da kiem chung: 2 co che cu KHONG con song.
 
-    Truoc ban va nay crawler khong bao gio goi buoc nay -> cac cau soi noi bi
-    cat cut. Do tren du lieu that: 10/17 cau co >=20 binh luan bi mat trung
-    binh ~30-50% noi dung (co cau hien 20/78 binh luan).
+    1. `/ajax/discussion/load-complete/` tra 404 voi moi id (9/2026). Trang
+       discussion gio render du binh luan inline, khong con nut
+       "Load full discussion..." -> `load_full_comments` da bi xoa.
+    2. `question_id_from_tab` tra ve HANG SO 825909 cho moi cau/moi de -> vo
+       dung lam anchor -> da bi xoa.
 
-    Cac test duoi day khoa HANH VI: co goi AJAX khi co nut, KHONG goi khi
-    khong co nut, va khong lam hong du lieu khac khi AJAX loi.
+    Test nay khang dinh 2 ham do KHONG con ton tai, tranh ai do vo tinh khoi
+    phuc chung (se keo lai 28s retry + hang loat request 404 vo ich).
     """
 
-    def _tab(self, has_button=True, did="56676", comments=20):
-        """Tab gia: co/khong nut load-full-discussion, tra ve discussion-id."""
-        tab = MagicMock()
+    def test_load_full_comments_removed(self):
+        import examtopic.crawler as crawler
+        self.assertFalse(hasattr(crawler, "load_full_comments"),
+                         "load_full_comments phu thuoc AJAX da chet, khong duoc khoi phuc")
 
-        def query_selector(sel):
-            if sel == '.load-full-discussion-button':
-                return MagicMock() if has_button else None
-            return MagicMock()
+    def test_question_id_from_tab_removed(self):
+        import examtopic.crawler as crawler
+        self.assertFalse(hasattr(crawler, "question_id_from_tab"),
+                         "question_id_from_tab tra hang so 825909, khong dung lam anchor")
 
-        tab.query_selector.side_effect = query_selector
-        # evaluate() dau tien la _extract_discussion_id -> tra data-discussion-id.
-        # evaluate() sau do la buoc bom fragment -> tra True (bom thanh cong).
-        tab.evaluate.side_effect = [did, True]
-        # _count_comments truoc/sau khi bom.
-        tab.eval_on_selector_all.return_value = comments
-        return tab
-
-    def test_skips_ajax_when_no_load_button(self):
-        """Khong co nut => trang da day du, khong ton request nao."""
-        from examtopic.crawler import load_full_comments
-        tab = self._tab(has_button=False)
-        with patch("examtopic.crawler.httpx.get") as mock_get:
-            result = load_full_comments(tab, "https://x.test/view/56676-exam-a-topic-1-question-1-discussion/")
-        self.assertIsNone(result)
-        mock_get.assert_not_called()
-
-    def test_calls_ajax_when_load_button_present(self):
-        """Co nut => phai goi AJAX load-complete voi dung discussion-id."""
-        from examtopic.crawler import load_full_comments
-        tab = self._tab(has_button=True, did="56676")
-        resp = MagicMock(status_code=200, text=(
-            '<div class="outer-discussion-container">'
-            '<div class="comment-content">a</div></div>'
-        ))
-        with patch("examtopic.crawler.httpx.get", return_value=resp) as mock_get:
-            load_full_comments(tab, "https://x.test/view/56676-exam-a-topic-1-question-1-discussion/")
-        self.assertEqual(mock_get.call_count, 1)
-        self.assertEqual(mock_get.call_args.kwargs.get("params"), {"discussion-id": "56676"})
-
-    def test_ajax_failure_keeps_existing_dom(self):
-        """AJAX loi => tra None va KHONG bom gi vao DOM (khong mat du lieu cu)."""
-        from examtopic.crawler import load_full_comments
-        tab = self._tab(has_button=True)
-        resp = MagicMock(status_code=500, text="")
-        with patch("examtopic.crawler.httpx.get", return_value=resp):
-            result = load_full_comments(tab, "https://x.test/view/56676-exam-a-topic-1-question-1-discussion/")
-        self.assertIsNone(result)
-        # evaluate chi duoc goi 1 lan (doc discussion-id), khong bom fragment.
-        self.assertEqual(tab.evaluate.call_count, 1)
-
-    def test_fragment_without_container_is_rejected(self):
-        """Fragment khong co .outer-discussion-container => coi nhu that bai."""
-        from examtopic.crawler import load_full_comments
-        tab = self._tab(has_button=True)
-        tab.evaluate.side_effect = ["56676", False]
-        resp = MagicMock(status_code=200, text="<div>khong co container</div>")
-        with patch("examtopic.crawler.httpx.get", return_value=resp):
-            result = load_full_comments(tab, "https://x.test/view/56676-exam-a-topic-1-question-1-discussion/")
-        self.assertIsNone(result)
-
-    def test_derives_discussion_id_from_url_when_dom_lacks_it(self):
-        """DOM khong co data-discussion-id => rot ve id trong slug URL."""
-        from examtopic.crawler import load_full_comments
-        tab = MagicMock()
-        tab.query_selector.return_value = MagicMock()
-        tab.evaluate.side_effect = [None, True]
-        tab.eval_on_selector_all.return_value = 5
-        resp = MagicMock(status_code=200, text='<div class="outer-discussion-container"></div>')
-        with patch("examtopic.crawler.httpx.get", return_value=resp) as mock_get:
-            load_full_comments(tab, "https://www.examtopics.com/discussions/ms/view/56676-exam-ms-700-topic-1-question-21-discussion/")
-        self.assertEqual(mock_get.call_args.kwargs.get("params"), {"discussion-id": "56676"})
-
-    def test_uses_proxy_set_after_import(self):
-        """Proxy set sau khi import van phai ap dung (cung loi nhu HTTP fallback)."""
-        from examtopic.crawler import load_full_comments
-        set_proxy("http://127.0.0.1:6666")
-        try:
-            tab = self._tab(has_button=True)
-            resp = MagicMock(status_code=200, text='<div class="outer-discussion-container"></div>')
-            with patch("examtopic.crawler.httpx.get", return_value=resp) as mock_get:
-                load_full_comments(tab, "https://x.test/view/56676-exam-a-topic-1-question-1-discussion/")
-            self.assertEqual(mock_get.call_args.kwargs.get("proxy"), "http://127.0.0.1:6666")
-        finally:
-            set_proxy(None)
-
-    def test_returns_before_and_after_counts(self):
-        """Tra ve (truoc, sau) de log chung minh da nap them binh luan."""
-        from examtopic.crawler import load_full_comments
-        tab = MagicMock()
-        tab.query_selector.return_value = MagicMock()
-        tab.evaluate.side_effect = ["56676", True]
-        tab.eval_on_selector_all.side_effect = [20, 70]
-        resp = MagicMock(status_code=200, text='<div class="outer-discussion-container"></div>')
-        with patch("examtopic.crawler.httpx.get", return_value=resp):
-            result = load_full_comments(tab, "https://x.test/view/56676-exam-a-topic-1-question-1-discussion/")
-        self.assertEqual(result, (20, 70))
-
-    def test_strips_scripts_from_fragment(self):
-        """Fragment phai duoc loc script truoc khi bom vao DOM."""
-        from examtopic.crawler import load_full_comments
-        tab = MagicMock()
-        tab.query_selector.return_value = MagicMock()
-        tab.evaluate.side_effect = ["56676", True]
-        tab.eval_on_selector_all.return_value = 5
-        resp = MagicMock(status_code=200, text=(
-            '<div class="outer-discussion-container"></div>'
-            '<script>alert(1)</script>'
-        ))
-        with patch("examtopic.crawler.httpx.get", return_value=resp):
-            load_full_comments(tab, "https://x.test/view/56676-exam-a-topic-1-question-1-discussion/")
-        bommed = tab.evaluate.call_args.args[1]
-        self.assertNotIn("<script>alert(1)</script>", bommed)
-        self.assertIn("outer-discussion-container", bommed)
+    def test_load_complete_url_constant_removed(self):
+        import examtopic.config as config
+        self.assertFalse(hasattr(config, "LOAD_COMPLETE_URL"),
+                         "LOAD_COMPLETE_URL tro toi endpoint 404, khong duoc khoi phuc")
 
 
 class TestScriptTagPreservation(unittest.TestCase):
@@ -971,40 +997,161 @@ class TestUpsertRobustKeys(unittest.TestCase):
 
 
 class TestHttpRetryBackoff(unittest.TestCase):
+    """Retry khi bi chan nam trong `resolver.fetch_html` (dung chung moi duong).
+
+    Do tren trang that (9/2026): 8 worker song song -> ~6 req/s, 0x429; 24 worker
+    -> 24x429 ngay lap tuc, va khi bi chan thi MOI request deu tra 429 (khong co
+    404 nao). Con 404 la TAT DINH cho cap (id, slug) sai hoac cau bi go/paywall.
+    Vi vay CHI 429/503 duoc retry; 404 ket thuc ngay.
+    """
+
     def test_retries_on_429_then_succeeds(self):
-        from examtopic.crawler import load_discussion_via_http
+        from examtopic import resolver
         responses = [
             MagicMock(status_code=429, text="rate limited"),
-            MagicMock(status_code=200, text="<div class='discussion-header-container'></div>"),
+            MagicMock(status_code=200, text="<html>ok</html>"),
         ]
-        tab = MagicMock()
-        tab.query_selector.return_value = MagicMock()
-        with patch("examtopic.crawler.httpx.get", side_effect=responses) as mock_get, \
-             patch("examtopic.crawler.time.sleep") as mock_sleep:
-            ok = load_discussion_via_http(tab, "https://x.test")
-        self.assertTrue(ok)
+        responses[0].headers = {}
+        responses[1].headers = {}
+        with patch("examtopic.resolver.httpx.get", side_effect=responses) as mock_get, \
+             patch("examtopic.resolver.time.sleep") as mock_sleep:
+            html = resolver.fetch_html("https://x.test/retry429")
+        self.assertEqual(html, "<html>ok</html>")
         self.assertEqual(mock_get.call_count, 2)
-        mock_sleep.assert_called_once_with(1.0)
+        mock_sleep.assert_called()
+
+    def test_honors_retry_after_header(self):
+        """429 kem Retry-After thi phai cho theo header, khong dung backoff cung."""
+        from examtopic import resolver
+        resp429 = MagicMock(status_code=429, text="")
+        resp429.headers = {"Retry-After": "7"}
+        resp200 = MagicMock(status_code=200, text="<html>ok</html>")
+        resp200.headers = {}
+        responses = [resp429, resp200]
+        with patch("examtopic.resolver.httpx.get", side_effect=responses), \
+             patch("examtopic.resolver.time.sleep") as mock_sleep:
+            html = resolver.fetch_html("https://x.test/retryafter")
+        self.assertEqual(html, "<html>ok</html>")
+        # `_wait_for_slot` cung goi time.sleep (gian nhip toan cuc), nen phai
+        # kiem tra 7.0 CO trong cac lan goi thay vi assert_called_once.
+        self.assertIn(7.0, [c.args[0] for c in mock_sleep.call_args_list])
+
+    def test_404_is_terminal_not_retried(self):
+        """404 = cap (id, slug) sai hoac cau bi go/paywall -> KHONG duoc retry.
+
+        Do tren trang that: 404 khong bao gio la tin hieu "bi chan" (khi bi chan
+        MOI request deu tra 429). Retry 404 chi dot 28s (4+8+16) vo ich va lam
+        nguoi dung tuong tool treo.
+        """
+        from examtopic import resolver
+        resp = MagicMock(status_code=404, text="")
+        resp.headers = {}
+        with patch("examtopic.resolver.httpx.get", return_value=resp) as mock_get, \
+             patch("examtopic.resolver.time.sleep") as mock_sleep:
+            html = resolver.fetch_html("https://x.test/terminal404")
+        self.assertIsNone(html)
+        self.assertEqual(mock_get.call_count, 1, "404 khong duoc goi lai")
+        mock_sleep.assert_not_called()
+
+    def test_load_discussion_404_does_not_open_browser(self):
+        """404 tren link discussion -> bao GATED, KHONG fallback sang browser.
+
+        Day chinh la bug nguoi dung bao: "mo link blank va cu cho" = HTTP 404
+        roi `safe_goto` tao `Page.goto: ERR_HTTP_RESPONSE_CODE_FAILURE` va treo
+        ~15s. Voi 404 da biet, tool phai thoat ngay.
+        """
+        from examtopic.crawler import crawl_one_question
+        from examtopic.config import NO_DISCUSSION_GATED
+        page = MagicMock()
+        tab = MagicMock()
+        page.context.new_page.return_value = tab
+        with patch("examtopic.crawler.find_discussion_link",
+                   return_value="https://www.examtopics.com/discussions/x/view/1-exam-a-topic-1-question-1-discussion/"), \
+             patch("examtopic.crawler.load_discussion_via_http_status", return_value=(False, 404)), \
+             patch("examtopic.crawler.safe_goto") as mock_goto, \
+             patch("examtopic.crawler.resolver.mark_url_dead"):
+            result = crawl_one_question(page, "a", 1, 1)
+        self.assertIs(result, NO_DISCUSSION_GATED)
+        mock_goto.assert_not_called()
+
+    def test_load_discussion_429_does_fall_back_to_browser(self):
+        """429 la loi TAM THOI -> van phai fallback browser (khong ket luan chet)."""
+        from examtopic.crawler import crawl_one_question
+        from examtopic.config import NO_DISCUSSION_GATED
+        page = MagicMock()
+        tab = MagicMock()
+        page.context.new_page.return_value = tab
+        with patch("examtopic.crawler.find_discussion_link",
+                   return_value="https://www.examtopics.com/discussions/x/view/1-exam-a-topic-1-question-1-discussion/"), \
+             patch("examtopic.crawler.load_discussion_via_http_status", return_value=(False, 429)), \
+             patch("examtopic.crawler.safe_goto", return_value=False) as mock_goto:
+            result = crawl_one_question(page, "a", 1, 1)
+        self.assertIsNot(result, NO_DISCUSSION_GATED)
+        mock_goto.assert_called_once()
 
     def test_gives_up_after_exhausting_retries(self):
-        from examtopic.crawler import load_discussion_via_http
-        responses = [MagicMock(status_code=503, text="")] * 3
-        tab = MagicMock()
-        with patch("examtopic.crawler.httpx.get", side_effect=responses), \
-             patch("examtopic.crawler.time.sleep"):
-            ok = load_discussion_via_http(tab, "https://x.test")
-        self.assertFalse(ok)
+        from examtopic import resolver
+        resp = MagicMock(status_code=503, text="")
+        resp.headers = {}
+        with patch("examtopic.resolver.httpx.get", return_value=resp), \
+             patch("examtopic.resolver.time.sleep"):
+            self.assertIsNone(resolver.fetch_html("https://x.test/exhaust503"))
 
-    def test_non_retryable_status_fails_immediately(self):
+    def test_returns_none_on_request_error(self):
+        from examtopic import resolver
+        with patch("examtopic.resolver.httpx.get", side_effect=OSError("boom")):
+            self.assertIsNone(resolver.fetch_html("https://x.test/neterr"))
+
+    def test_dead_url_is_not_refetched(self):
+        """URL da xac nhan chet (404) khong duoc dam lai.
+
+        Do duoc tren trang that: mot cau hong bi dam 12 request chi vi cache cu
+        dung lai dung link do.
+        """
+        from examtopic import resolver
+        url = "https://x.test/dead"
+        resp = MagicMock(status_code=404, text="")
+        resp.headers = {}
+        with patch("examtopic.resolver.httpx.get", return_value=resp) as mock_get, \
+             patch("examtopic.resolver.time.sleep"):
+            self.assertIsNone(resolver.fetch_html(url))
+            first = mock_get.call_count
+            self.assertIsNone(resolver.fetch_html(url))
+        self.assertEqual(mock_get.call_count, first,
+                         "URL da biet chet khong duoc goi lai")
+
+    def test_dead_url_expires_after_cooldown(self):
+        """404 cung co the do cau duoc cong khai lai -> sau cooldown phai cho thu lai."""
+        from examtopic import resolver
+        url = "https://x.test/maybe"
+        resp = MagicMock(status_code=404, text="")
+        resp.headers = {}
+        with patch("examtopic.resolver.httpx.get", return_value=resp), \
+             patch("examtopic.resolver.time.sleep"):
+            resolver.fetch_html(url)
+        # Gia lap cooldown da het.
+        resolver._DEAD_URLS[url] = 0.0
+        with patch("examtopic.resolver.httpx.get", return_value=resp) as mock_get2, \
+             patch("examtopic.resolver.time.sleep"):
+            resolver.fetch_html(url)
+        self.assertGreater(mock_get2.call_count, 0)
+
+    def test_fetch_html_status_reports_404(self):
+        """fetch_html_status phai tra status de caller phan biet 404 voi 429."""
+        from examtopic import resolver
+        resp = MagicMock(status_code=404, text="")
+        resp.headers = {}
+        with patch("examtopic.resolver.httpx.get", return_value=resp), \
+             patch("examtopic.resolver.time.sleep"):
+            html, status = resolver.fetch_html_status("https://x.test/gone")
+        self.assertIsNone(html)
+        self.assertEqual(status, 404)
+
+    def test_http_fallback_fails_when_fetch_returns_none(self):
         from examtopic.crawler import load_discussion_via_http
         tab = MagicMock()
-        with patch("examtopic.crawler.httpx.get",
-                   return_value=MagicMock(status_code=404, text="nope")) as mock_get, \
-             patch("examtopic.crawler.time.sleep") as mock_sleep:
-            ok = load_discussion_via_http(tab, "https://x.test")
-        self.assertFalse(ok)
-        self.assertEqual(mock_get.call_count, 1)
-        mock_sleep.assert_not_called()
+        with patch("examtopic.resolver.fetch_html_status", return_value=(None, 429)):
+            self.assertFalse(load_discussion_via_http(tab, "https://x.test"))
 
 
 class TestHasGoodData(unittest.TestCase):
@@ -1203,6 +1350,67 @@ class TestConvertMalformedData(unittest.TestCase):
         convert_to_docx(path)
 
 
+class TestCommunityVoteTally(unittest.TestCase):
+    """Khoi phuc `community_most_voted` tu badge binh luan co trong so upvote.
+
+    `.voted-answers-tally` va `.most-voted-answer-badge` da bien mat (do tren
+    trang that: 0 lan xuat hien) -> ban cu luon tra [] (0/45 va 0/417 ban ghi).
+    Marker con song la badge `Selected Answer: <strong>X</strong>` tren tung
+    binh luan, kem `.upvote-count` rieng.
+    """
+
+    def test_clean_votes_keeps_letters_and_weights(self):
+        from examtopic.crawler import _clean_community_votes
+        got = _clean_community_votes([
+            {"letter": "b", "weight": 3},
+            {"letter": "A", "weight": "7"},
+        ])
+        self.assertEqual(got, [{"letter": "B", "weight": 3}, {"letter": "A", "weight": 7}])
+
+    def test_clean_votes_drops_junk(self):
+        from examtopic.crawler import _clean_community_votes
+        got = _clean_community_votes([
+            None, "rac", {"letter": ""}, {"weight": 5},
+            {"letter": "Z9", "weight": "khong-phai-so"},
+            {"letter": "C", "weight": -4},
+        ])
+        self.assertEqual(got, [{"letter": "Z", "weight": 0}, {"letter": "C", "weight": 0}])
+
+    def test_clean_votes_handles_non_list(self):
+        from examtopic.crawler import _clean_community_votes
+        for bad in (None, "x", 5, {"a": 1}):
+            self.assertEqual(_clean_community_votes(bad), [])
+
+
+class TestQuestionTypeDetection(unittest.TestCase):
+    """Do tren du lieu that: 140/382 ban ghi ms-700 khong co lua chon A/B/C/D.
+
+    Truoc day chung chi co `options: []` im lang -> nguoi doc tuong tool loi.
+    Phai gan nhan loai cau de exporter giai thich.
+    """
+
+    def test_options_present_is_multiple_choice(self):
+        from examtopic.crawler import _detect_question_type
+        opts = [{"letter": "A", "text": "x"}]
+        self.assertEqual(_detect_question_type("bat ky", opts), "multiple-choice")
+
+    def test_hotspot_detected(self):
+        from examtopic.crawler import _detect_question_type
+        self.assertEqual(_detect_question_type("HOTSPOT - x\nHot Area:", []), "hotspot")
+
+    def test_drag_drop_detected(self):
+        from examtopic.crawler import _detect_question_type
+        self.assertEqual(_detect_question_type("Drag and drop the items.", []), "drag-drop")
+
+    def test_selection_detected(self):
+        from examtopic.crawler import _detect_question_type
+        self.assertEqual(_detect_question_type("select the appropriate options in the answer area", []), "selection")
+
+    def test_unknown_when_no_signal(self):
+        from examtopic.crawler import _detect_question_type
+        self.assertEqual(_detect_question_type("plain text", []), "unknown")
+
+
 class TestTopComments(unittest.TestCase):
     """Cau HOTSPOT/DRAG DROP khong co dap an A/B/C/D -> hien binh luan noi bat.
 
@@ -1317,13 +1525,26 @@ class TestTopComments(unittest.TestCase):
         self.assertIn("Val_0", html_out)
         self.assertIn("không phải đáp án chính thức", html_out)
 
-    def test_html_hides_block_for_normal_question(self):
+    def test_html_hides_block_for_normal_question_with_top_comments(self):
         """Cau co dap an A/B/C/D thi KHONG duoc hien khoi binh luan noi bat."""
         html_out = build_html([self._normal(self.TOP)], "x", embed_images=False)
         self.assertNotIn('class="top-comments"', html_out)
 
-    def test_html_hides_block_when_no_top_comments(self):
+    def test_html_explains_missing_options_when_no_top_comments(self):
+        """Khong co binh luan van phai noi RO vi sao khong co lua chon.
+
+        Truoc day khoi bi an hoan toan -> nguoi doc tuong tool loi. Do tren du
+        lieu that: 140/382 ban ghi ms-700 khong co lua chon (da so la HOTSPOT),
+        nen phai hien nhan loai cau thay vi de trong im lang.
+        """
         html_out = build_html([self._special()], "x", embed_images=False)
+        self.assertIn('class="top-comments"', html_out)
+        self.assertIn("HOTSPOT", html_out)
+        self.assertIn("Không có bình luận cộng đồng", html_out)
+
+    def test_html_hides_block_for_normal_question(self):
+        """Cau thuong co dap an A/B/C/D thi KHONG hien khoi giai thich loai cau."""
+        html_out = build_html([self._normal()], "x", embed_images=False)
         self.assertNotIn('class="top-comments"', html_out)
 
     def test_docx_shows_block_for_special_question(self):

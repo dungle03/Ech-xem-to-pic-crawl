@@ -16,6 +16,7 @@ from examtopic import (
     DEFAULT_OP_TIMEOUT,
     NO_DISCUSSION_BLOCKED,
     NO_DISCUSSION_MISSING,
+    NO_DISCUSSION_GATED,
     SEARCH_OK,
     SEARCH_EMPTY,
     SEARCH_BLOCKED,
@@ -49,10 +50,10 @@ from examtopic import (
     warmup_search,
     search_engine,
     find_discussion_link,
+    forget_harvested_link,
     close_extra_tabs,
     wait_for_discussion,
     load_discussion_via_http,
-    load_full_comments,
     sync_browser_session,
     crawl_one_question,
     build_html,
@@ -76,6 +77,7 @@ __all__ = [
     "DEFAULT_OP_TIMEOUT",
     "NO_DISCUSSION_BLOCKED",
     "NO_DISCUSSION_MISSING",
+    "NO_DISCUSSION_GATED",
     "SEARCH_OK",
     "SEARCH_EMPTY",
     "SEARCH_BLOCKED",
@@ -109,10 +111,10 @@ __all__ = [
     "warmup_search",
     "search_engine",
     "find_discussion_link",
+    "forget_harvested_link",
     "close_extra_tabs",
     "wait_for_discussion",
     "load_discussion_via_http",
-    "load_full_comments",
     "sync_browser_session",
     "crawl_one_question",
     "build_html",
@@ -274,6 +276,7 @@ def main():
     failed = []
     failed_blocked = []
     failed_missing = []
+    failed_gated = []
     context = None
     page = None
     try:
@@ -287,15 +290,19 @@ def main():
             LOG.warning("  Canh bao: khong tai duoc DuckDuckGo, van thu crawl tiep.")
         sync_browser_session(page)
 
-        # Nap anchor question_id tu trang exam de cac cau thuoc khoi dau tien giai
-        # duoc bang duong tat dinh (khong can search). Loi o buoc nay khong lam
-        # dung phien: khong co anchor thi tool quay ve dung search nhu truoc.
-        LOG.info("Nap anchor question_id (duong tat dinh)...")
+        # Nap chi muc URL discussion tu trang liet ke cua vendor (thay cho
+        # "anchor question_id" cua ban cu, da chet vi `data-id` nay la hang so).
+        # Loi o buoc nay khong lam dung phien: khong co chi muc thi tool quay ve
+        # dung search nhu truoc.
+        LOG.info("Nap chi muc URL discussion (vendor listing)...")
         try:
-            resolver.load_anchors()
+            resolver.load_index()
             resolver.seed_from_exam_page(search_code)
+            # Dap an chinh thuc tu trang exam (chi q1..q10 mien phi) - nguon dang
+            # tin nhat, uu tien hon viec suy tu binh luan.
+            resolver.exam_answer_key(search_code)
         except Exception as e:
-            LOG.warning(f"  Khong nap duoc anchor: {e}")
+            LOG.warning(f"  Khong nap duoc chi muc URL: {e}")
 
         interrupted = False
         aborted = False
@@ -315,6 +322,10 @@ def main():
                     if result is NO_DISCUSSION_MISSING:
                         no_link_reason = ("Khong tim thay link discussion vi ca "
                                           "DuckDuckGo va Google da search nhung khong co link dung cau")
+                        break
+                    if result is NO_DISCUSSION_GATED:
+                        no_link_reason = ("Cau bi paywall/go bo: link tim duoc tra HTTP 404 "
+                                          "(khong phai loi tam thoi, thu lai vo ich)")
                         break
                     if isinstance(result, dict):
                         break
@@ -346,6 +357,8 @@ def main():
                         failed_blocked.append(qnum)
                     elif result is NO_DISCUSSION_MISSING:
                         failed_missing.append(qnum)
+                    elif result is NO_DISCUSSION_GATED:
+                        failed_gated.append(qnum)
                     error_msg = no_link_reason or "Khong lay duoc cau hoi"
                     # So sanh key bang as_int: du lieu cu co the luu topic dang
                     # chuoi, neu so sanh == truc tiep se coi la khac cau va record
@@ -395,6 +408,11 @@ def main():
             # bo sot (da gap that voi ccaak cau 108/98/85...). Chi bao dung su that
             # la khong tim thay link nao khop cau.
             LOG.info(f"  Vi khong tim thay link discussion khop cau: {', '.join(map(str, failed_missing))}")
+        if failed_gated:
+            # Day KHONG phai loi tam thoi: link tim duoc tra 404 that (cap id+slug
+            # khong ton tai, hoac cau bi go/paywall). Chay lai se khong giup gi.
+            LOG.info(f"  Vi cau bi paywall/go bo (HTTP 404 that, chay lai khong giup): "
+                     f"{', '.join(map(str, failed_gated))}")
         LOG.info(f"Ket qua: output/{filename}")
         # Ghi ca khi danh sach loi rong: neu lan nay da lay duoc het cac cau tung
         # loi thi file .errors.json phai duoc rong theo, khong giu lai ban ghi cu.

@@ -1,25 +1,21 @@
 import re
 import time
 import random
-import httpx
 from urllib.parse import urljoin, quote_plus
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from . import config
 from . import resolver
 from .config import (
     LOG,
     DEFAULT_OP_TIMEOUT,
-    RETRY_HTTP_ATTEMPTS,
-    RETRY_HTTP_BACKOFF,
     SEARCH_ENGINES,
-    LOAD_COMPLETE_URL,
     SEARCH_OK,
     SEARCH_EMPTY,
     SEARCH_BLOCKED,
     SEARCH_ERROR,
     NO_DISCUSSION_BLOCKED,
     NO_DISCUSSION_MISSING,
+    NO_DISCUSSION_GATED,
     _BLOCK_SELECTORS,
     _BLOCK_TEXT,
     _IMG_HEADERS,
@@ -258,6 +254,21 @@ def search_engine(page, query, engine="duckduckgo"):
     LOG.info(f"  {engine}: duong URL truc tiep khong dung duoc, thu go tay...")
     return _search_by_typing(page, cfg, query, engine)
 
+def forget_harvested_link(exam_code, topic, qnum):
+    """Xoa mot link KHOI cache `_HARVESTED_LINKS` sau khi xac dinh no hong.
+
+    Vi sao can: cache nay duoc ghi tu ket qua search va tu du lieu cu. Search
+    engine co the tra ve URL dung dinh dang nhung da chet (404 that), va ban cu
+    cu dung lai dung link do cho MOI lan retry -> 3 lan thu vo ich cho mot cau.
+    Xoa khoi cache thi lan sau se di tim lai thay vi dam vao tuong.
+    """
+    try:
+        key = (canonical_exam_code(exam_code), int(topic), int(qnum))
+    except (TypeError, ValueError):
+        return False
+    return _HARVESTED_LINKS.pop(key, None) is not None
+
+
 def find_discussion_link(page, exam_code, topic, qnum):
     """Tim URL discussion khop cau hoi. Thu TAT DINH truoc, roi moi den search.
 
@@ -279,7 +290,6 @@ def find_discussion_link(page, exam_code, topic, qnum):
         cached_url = _HARVESTED_LINKS[target_key]
         LOG.info(f"  [Bo nho cache] Dung link discussion da thu thap: {cached_url}")
         return cached_url
-
     # 0. Duong tat dinh (khong search).
     try:
         resolved = resolver.resolve(exam_code, topic, qnum)
@@ -357,50 +367,22 @@ def wait_for_discussion(tab, timeout=DEFAULT_OP_TIMEOUT):
     except Exception:
         return False
 
-def load_discussion_via_http(tab, href, timeout=20):
-    """Fallback: tai HTML discussion bang HTTP thuan roi nap vao tab.
+def load_discussion_via_http_status(tab, href, timeout=20):
+    """Nhu `load_discussion_via_http` nhung tra ve `(loaded, status_code)`.
 
-    Trang discussion cua examtopics duoc render san tu server (curl/httpx lay
-    duoc trong ~1s), nhung mo bang browser doi khi treo vo han vi tracker/ads.
-    Ta tai HTML bang httpx, XOA cac the <script>/<iframe> (quang cao/tracker,
-    khong can vi noi dung la HTML tinh render san), roi bom vao tab bang
-    document.write de nap tuc thi ma KHONG cho tai nguyen ngoai.
-    Tra ve True neu nap duoc noi dung discussion, False neu that bai.
+    `status_code` cho caller biet VI SAO that bai: 404 = link chet/paywall (khong
+    nen fallback sang browser, khong nen retry), 429/503 = dang bi chan, None =
+    loi ket noi. Neu khong phan biet duoc, tool se mo browser cho mot link 404
+    da biet -> `Page.goto: ERR_HTTP_RESPONSE_CODE_FAILURE` treo ~15s, dung nhu
+    hien tuong "mo link blank va cho" ma nguoi dung bao.
     """
-    ua = _IMG_HEADERS.get("User-Agent") or ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-    cookies = _SESSION_COOKIES or None
-    # Doc `config._PROXY` tai thoi diem goi, KHONG import truc tiep: `from .config
-    # import _PROXY` chi copy gia tri luc import, nen set_proxy() sau do se khong
-    # bao gio den duoc day -> HTTP fallback am tham bo qua proxy, lo IP that.
-    proxy = config._PROXY
-    # Cloudflare doi khi tra 429/503 (rate-limit/challenge) trong giay lat. Thu lai
-    # toi da 2 lan voi backoff 1s -> 2s (tong cho toi da 3s) de cuu nhung lan chan
-    # ngan han, thay vi that bai ngay va rot xuong browser cham hon.
-    retry_statuses = (429, 503)
-    html_text = None
-    for attempt in range(RETRY_HTTP_ATTEMPTS + 1):
-        try:
-            resp = httpx.get(href, headers={"User-Agent": ua}, cookies=cookies, proxy=proxy, timeout=timeout,
-                             follow_redirects=True)
-        except httpx.RequestError as e:
-            LOG.warning(f"    Loi ket noi HTTP fallback: {e}")
-            return False
-        except Exception as e:
-            LOG.warning(f"    Loi ngoai le HTTP fallback: {e}")
-            return False
-        if resp.status_code == 200 and resp.text:
-            html_text = resp.text
-            break
-        if resp.status_code in retry_statuses and attempt < RETRY_HTTP_ATTEMPTS:
-            wait = RETRY_HTTP_BACKOFF * (2 ** attempt)
-            LOG.info(f"    HTTP {resp.status_code} - thu lai sau {wait:.0f}s "
-                  f"(lan {attempt + 1}/{RETRY_HTTP_ATTEMPTS})...")
-            time.sleep(wait)
-            continue
-        LOG.info(f"    HTTP fallback tra ve ma HTTP {resp.status_code}")
-        return False
+    # Dung resolver.fetch_html_status (khong goi httpx truc tiep) de MOI request
+    # deu duoc GIAN NHIP toan cuc va retry khi bi chan. Do tren trang that: khi
+    # bi chan MOI request deu tra 429 (24 song song -> 24x429, khong 404 nao),
+    # con 404 la TAT DINH cho cap (id, slug) sai hoac cau bi go/paywall.
+    html_text, status = resolver.fetch_html_status(href, timeout=timeout)
     if html_text is None:
-        return False
+        return False, status
     # Xoa script/iframe: chung khien trinh duyet co gang tai/thuc thi
     # tracker+ads, trong khi noi dung can boc la HTML tinh render san.
     html_text = _RE_SCRIPT.sub('', html_text)
@@ -416,127 +398,22 @@ def load_discussion_via_http(tab, href, timeout=20):
         )
     except Exception as e:
         LOG.warning(f"    Loi nap HTML vao tab: {e}")
-        return False
-    return tab.query_selector('.discussion-header-container') is not None
+        return False, status
+    return tab.query_selector('.discussion-header-container') is not None, status
 
-def _extract_discussion_id(tab, href):
-    """Lay discussion-id de goi AJAX load-complete.
 
-    Uu tien `data-discussion-id` trong DOM vi do la nguon chinh thuc trang dung.
-    Neu DOM khong co (hien thi la), rot ve id nam trong slug URL dang
-    `/view/<id>-exam-...`. Tra ve None neu khong xac dinh duoc.
+def load_discussion_via_http(tab, href, timeout=20):
+    """Fallback: tai HTML discussion bang HTTP thuan roi nap vao tab.
+
+    Trang discussion cua examtopics duoc render san tu server (curl/httpx lay
+    duoc trong ~1s), nhung mo bang browser doi khi treo vo han vi tracker/ads.
+    Ta tai HTML bang httpx, XOA cac the <script>/<iframe> (quang cao/tracker,
+    khong can vi noi dung la HTML tinh render san), roi bom vao tab bang
+    document.write de nap tuc thi ma KHONG cho tai nguyen ngoai.
+    Tra ve True neu nap duoc noi dung discussion, False neu that bai.
     """
-    try:
-        did = tab.evaluate(
-            "() => { const el = document.querySelector('[data-discussion-id]');"
-            " return el ? el.getAttribute('data-discussion-id') : null; }"
-        )
-        if did and str(did).strip().isdigit():
-            return str(did).strip()
-    except Exception:
-        pass
-    try:
-        match = re.search(r'/view/(\d+)', str(href))
-        if match:
-            return match.group(1)
-    except Exception:
-        pass
-    return None
-
-def load_full_comments(tab, href):
-    """Nap TOAN BO binh luan cua discussion vao DOM hien tai.
-
-    Trang discussion cua ExamTopics chi render san ~20-25 binh luan dau; phan
-    con lai nam sau nut "Load full discussion..." va chi lay duoc qua AJAX
-    `load-complete`. Neu khong goi buoc nay, cac cau soi noi bi cat cut: do
-    duoc 10/17 cau co >=20 binh luan bi mat trung binh ~30-50% noi dung.
-
-    Fragment AJAX tra ve chua `.outer-discussion-container` (chi gom phan binh
-    luan). De bai, lua chon, dap an va bang vote nam NGOAI container nay nen
-    thay the no khong lam mat du lieu nao khac.
-
-    Tra ve so binh luan truoc/sau khi nap, hoac None neu khong nap duoc.
-    """
-    before = _count_comments(tab)
-    # Khong co nut => trang da day du, khong ton request nao.
-    try:
-        if not tab.query_selector('.load-full-discussion-button'):
-            return None
-    except Exception:
-        return None
-
-    did = _extract_discussion_id(tab, href)
-    if not did:
-        LOG.info("  Khong xac dinh duoc discussion-id, bo qua nap binh luan day du.")
-        return None
-
-    ua = _IMG_HEADERS.get("User-Agent") or ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-    # Doc `config._PROXY` tai thoi diem goi (khong import truc tiep) de proxy
-    # set sau khi import van duoc ap dung, giong load_discussion_via_http.
-    proxy = config._PROXY
-    try:
-        resp = httpx.get(
-            LOAD_COMPLETE_URL,
-            params={"discussion-id": did},
-            headers={"User-Agent": ua},
-            cookies=_SESSION_COOKIES or None,
-            proxy=proxy,
-            timeout=20,
-            follow_redirects=True,
-        )
-        if resp.status_code != 200 or not resp.text:
-            LOG.info(f"  Nap binh luan day du tra ve HTTP {resp.status_code}, giu nguyen trang hien tai.")
-            return None
-        fragment = _RE_SCRIPT.sub('', resp.text)
-        fragment = _RE_IFRAME.sub('', fragment)
-    except Exception as e:
-        LOG.info(f"  Khong nap duoc binh luan day du ({e}), giu nguyen trang hien tai.")
-        return None
-
-    # Thay the container binh luan cu bang ban day du. Tra ve False neu fragment
-    # khong co container nhu mong doi -> DOM giu nguyen, khong mat du lieu.
-    try:
-        replaced = tab.evaluate(
-            """(frag) => {
-                const holder = document.createElement('div');
-                holder.innerHTML = frag;
-                const fresh = holder.querySelector('.outer-discussion-container');
-                const old = document.querySelector('.outer-discussion-container');
-                if (!fresh || !old) return false;
-                old.replaceWith(fresh);
-                return true;
-            }""",
-            fragment,
-        )
-    except Exception as e:
-        LOG.info(f"  Loi bom binh luan day du vao DOM ({e}), giu nguyen trang hien tai.")
-        return None
-    if not replaced:
-        return None
-
-    after = _count_comments(tab)
-    if after > before:
-        LOG.info(f"  Da nap day du binh luan: {before} -> {after}")
-    return before, after
-
-def _count_comments(tab):
-    """Dem so binh luan dang co trong DOM, tra ve 0 neu khong doc duoc."""
-    try:
-        return tab.eval_on_selector_all('.comment-content', 'els => els.length')
-    except Exception:
-        return 0
-
-def question_id_from_tab(tab):
-    """Doc question_id cua cau hoi tu tab discussion dang mo. None neu khong co.
-
-    Day la nguon "anchor" mien phi: trang discussion nao cung co
-    `.question-body[data-id]`, va question_id lien mach theo khoi nen chi can 1
-    anchor moi khoi la giai duoc ca khoi bang duong tat dinh.
-    """
-    try:
-        return resolver.question_id_from_html(tab.content())
-    except Exception:
-        return None
+    loaded, _status = load_discussion_via_http_status(tab, href, timeout=timeout)
+    return loaded
 
 def _absolutize_images(urls, base_url):
     """Doi URL anh tuong doi thanh tuyet doi, lay `base_url` lam goc.
@@ -560,6 +437,51 @@ def _absolutize_images(urls, base_url):
         cleaned.append(u)
     return cleaned
 
+_RE_OPTION_LINE = re.compile(r'(?:^|\n)\s*([A-Z])[\.\)]\s+')
+
+
+def _split_options_from_text(text):
+    """Tach lua chon ra khoi text de bai, tra ve (de_bai, danh_sach_lua_chon).
+
+    Vi sao can: tu 9/2026 trang discussion KHONG con markup
+    `.question-choices-container .multi-choice-item` nua (do tren trang that: 0
+    phan tu). Lua chon chi con nam lan trong text dang
+
+        Which three RAID configurations are supported? (Choose three.)
+
+        A. 2D + 2D
+
+        B. 4D + 1P
+
+    Neu khong tach, moi ban ghi se co `options: []` va exporter khong hien duoc
+    lua chon nao (dung nhu 10 ban ghi hqt-4180 hong truoc day).
+
+    Chi tach khi tim thay day du A, B, C... LIEN TIEP tu A: nho vay cau hoi co
+    chu "A." trong de bai (vd "VSP G700. A drive fails") khong bi cat sai.
+    """
+    if not text:
+        return text, []
+    matches = list(_RE_OPTION_LINE.finditer(text))
+    if len(matches) < 2:
+        return text, []
+    letters = [m.group(1) for m in matches]
+    if letters != [chr(ord('A') + i) for i in range(len(letters))]:
+        return text, []
+    stem = text[:matches[0].start()].strip()
+    if not stem:
+        return text, []
+    options = []
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body = text[m.end():end].strip()
+        if body:
+            options.append({"letter": m.group(1), "text": body,
+                            "images": [], "is_correct": False})
+    if len(options) < 2:
+        return text, []
+    return stem, options
+
+
 def _is_noise_comment(text):
     """Binh luan chi bao "da gap cau nay trong ky thi" -> khong phai y kien ve dap an.
 
@@ -572,6 +494,54 @@ def _is_noise_comment(text):
     if not t:
         return True
     return bool(_RE_NOISE_COMMENT.match(t))
+
+def _detect_question_type(text, options):
+    """Doan loai cau hoi de exporter khong hien "options rong" vo nghia.
+
+    Do tren du lieu that: 140/382 ban ghi ms-700 khong co lua chon A/B/C/D, va
+    hau het la HOTSPOT / DRAG DROP (de bai co "Hot Area", "drag", "select the
+    appropriate..."). Truoc day chung chi co `options: []` im lang -> nguoi doc
+    tuong tool loi, trong khi that ra dang cau khong co dap an A/B/C/D.
+    """
+    if options:
+        return "multiple-choice"
+    t = (text or "").lower()
+    if "hot area" in t or "hotspot" in t:
+        return "hotspot"
+    if "drag" in t or "drop" in t:
+        return "drag-drop"
+    if "select the appropriate" in t or "answer area" in t:
+        return "selection"
+    return "unknown"
+
+
+def _clean_community_votes(raw):
+    """Chuan hoa danh sach phieu cong dong lay tu badge binh luan.
+
+    Moi muc la `{letter: 'A', weight: N}` — phieu cho mot lua chon, `weight` la
+    so upvote cua binh luan mang phieu do. Du lieu rac (thieu letter, weight am,
+    khong phai dict) bi bo qua thay vi lam hong ca ban ghi.
+
+    Thay the `.voted-answers-tally` da chet (do tren trang that: 0 lan xuat
+    hien). Truoc day truong nay luon la [] nen exporter khong co gi de hien.
+    """
+    if not isinstance(raw, list):
+        return []
+    cleaned = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        letter = str(item.get("letter") or "").strip().upper()
+        letter = "".join(c for c in letter if c.isalpha())
+        if not letter:
+            continue
+        try:
+            weight = int(item.get("weight") or 0)
+        except (TypeError, ValueError):
+            weight = 0
+        cleaned.append({"letter": letter, "weight": max(0, weight)})
+    return cleaned
+
 
 def _clean_top_comments(raw):
     """Chuan hoa danh sach binh luan noi bat lay tu trang discussion.
@@ -640,7 +610,7 @@ def crawl_one_question(page, exam_code, topic, qnum):
         LOG.info(f"  Tim thay: {href}")
 
         # 3. Mo tab va nap noi dung. Uu tien nap tuc thi qua HTTP (1s thay vi cho 15s quang cao),
-        #    neu loi thi tu dong fallback sang dieu huong browser thong thuong.
+        #    chi fallback sang dieu huong browser khi loi la TAM THOI (429/503/loi mang).
         LOG.info("  Dang mo tab va nap noi dung...")
         try:
             new_tab = page.context.new_page()
@@ -649,10 +619,25 @@ def crawl_one_question(page, exam_code, topic, qnum):
             new_tab = None
 
         loaded = False
+        http_status = None
         if new_tab:
-            loaded = load_discussion_via_http(new_tab, href)
+            loaded, http_status = load_discussion_via_http_status(new_tab, href)
             if loaded:
                 LOG.info("  Da nap noi dung tuc thi qua HTTP (~1s)")
+            elif http_status == 404:
+                # 404 la TAT DINH (cap id+slug khong ton tai, hoac cau bi go/
+                # paywall). Mo browser cho link nay chi tao
+                # `Page.goto: ERR_HTTP_RESPONSE_CODE_FAILURE` roi treo ~15s ->
+                # dung hien tuong "mo link blank va cho" nguoi dung bao. Thoat
+                # ngay, va bao ro day KHONG phai loi tam thoi.
+                LOG.info("  HTTP 404: link khong ton tai hoac cau bi paywall/go bo.")
+                forget_harvested_link(exam_code, topic, qnum)
+                try:
+                    resolver.mark_url_dead(href, exam_code, topic, qnum)
+                except Exception:
+                    pass
+                LOG.info("  Da loai link 404 khoi chi muc (se khong thu lai trong thoi gian cooldown).")
+                return NO_DISCUSSION_GATED
             else:
                 LOG.info("  HTTP load khong thanh cong, thu dieu huong truc tiep trong browser...")
                 if safe_goto(new_tab, href, timeout=15000):
@@ -662,28 +647,20 @@ def crawl_one_question(page, exam_code, topic, qnum):
             LOG.warning("  Khong mo duoc tab discussion")
             return None
         if not loaded:
+            # Chi con cac truong hop TAM THOI o day: 429/503 (dang bi chan), loi
+            # ket noi, hoac dieu huong browser that bai. 404 da duoc xu ly rieng
+            # phia tren (tra NO_DISCUSSION_GATED) nen KHONG duoc danh dau chet o
+            # day — danh dau chet mot link 429 se lam tool bo qua mot cau that
+            # su ton tai cho den het cooldown.
             LOG.info("  Van khong tai duoc noi dung discussion, thu boc du lieu du co...")
-            # Chi cho khi phai dieu huong that: luc do trang con dang render.
-            # Duong HTTP-first bom HTML bang document.write (DONG BO) nen DOM da
-            # san sang ngay, cho them 1s moi cau la phi (~1s x N cau).
             time.sleep(1)
 
-        # Thu hoach anchor (topic, qnum) -> question_id tu trang vua tai. Trang
-        # discussion nao cung lo `question-body data-id`, nen buoc nay MIEN PHI va
-        # giup cac cau sau trong cung khoi giai duoc khong can search.
-        try:
-            anchor_qid = question_id_from_tab(new_tab)
-            if anchor_qid:
-                resolver.record_anchor(exam_code, topic, qnum, anchor_qid)
-        except Exception:
-            pass
-
-        # 3b. Trang chi render san ~20-25 binh luan dau; nap not phan con lai
-        #     truoc khi boc de khong cat cut thao luan o cac cau soi noi.
-        try:
-            load_full_comments(new_tab, href)
-        except Exception as e:
-            LOG.info(f"  Bo qua buoc nap binh luan day du: {e}")
+        # Truoc day cho nay con 2 buoc da CHET (da xoa):
+        #  - thu hoach "anchor" question_id tu `.question-body[data-id]`: gia tri
+        #    nay tu 9/2026 la HANG SO 825909 cho moi cau/moi de -> vo dung.
+        #  - `load_full_comments` goi AJAX `/ajax/discussion/load-complete/`:
+        #    endpoint nay tra 404 voi moi id (da kiem chung). Trang discussion gio
+        #    render du binh luan inline, khong con nut "Load full discussion...".
 
         # 4 & 5. Xoa overlay va boc tach toan bo noi dung trong 1 lan evaluate duy nhat
         LOG.info("  Dang lay noi dung...")
@@ -738,11 +715,20 @@ def crawl_one_question(page, exam_code, topic, qnum):
                             || im.getAttribute('data-original')
                             || im.src
                             || '').filter(u => u);
+                        // Marker lua chon DUNG: `correct-hidden` (cu) da chet tren
+                        // trang discussion (0 lan xuat hien), nhung tren TRANG EXAM
+                        // thi marker dang song la thuoc tinh `data-correct<qid>`
+                        // (vd `data-correct862259`) va class `correct-choice`.
+                        // Nhan CA HAI de khong phu thuoc vao mot marker duy nhat.
+                        const hasAttr = Array.from(li.attributes)
+                            .some(a => a.name.toLowerCase().startsWith('data-correct'));
                         return {
                             letter: letter,
                             text: text,
                             images: imgs,
-                            is_correct: li.classList.contains('correct-hidden')
+                            is_correct: hasAttr
+                                || li.classList.contains('correct-hidden')
+                                || li.classList.contains('correct-choice')
                         };
                     });
 
@@ -787,38 +773,46 @@ def crawl_one_question(page, exam_code, topic, qnum):
 
                     let communityVotes = [];
                     let communityMostVoted = [];
+                    // Nguon tin hieu CONG DONG duy nhat con song (9/2026).
+                    //
+                    // `.voted-answers-tally` va `.most-voted-answer-badge` deu da
+                    // bien mat (do tren trang that: 0 lan xuat hien) -> ban cu luon
+                    // tra ve [] (do duoc: 0/45 va 0/417 ban ghi co du lieu nay).
+                    //
+                    // Cach thay the: moi binh luan co the mang badge
+                    //   Selected Answer: <span><strong>ABC</strong></span>
+                    // va so upvote rieng (`.upvote-count`). Cong DON theo upvote
+                    // thay vi dem so binh luan, vi nguoi thi roi upvote nhau nen
+                    // binh luan it nguoi nhung dung van co the it upvote hon.
                     try {
-                        const tallyScript = document.querySelector('.voted-answers-tally script[type="application/json"]');
-                        if (tallyScript && tallyScript.innerText) {
-                            const parsedVotes = JSON.parse(tallyScript.innerText);
-                            if (Array.isArray(parsedVotes)) {
-                                communityVotes = parsedVotes;
-                                for (let v of parsedVotes) {
-                                    if (v && v.is_most_voted && v.voted_answers) {
-                                        const letters = String(v.voted_answers).split(/[, \s]+/).filter(x => x);
-                                        communityMostVoted.push(...letters);
-                                    }
-                                }
+                        const blocks = document.querySelectorAll('.media.comment-container');
+                        for (const box of blocks) {
+                            const badgeEl = box.querySelector('.badge');
+                            const answerEl = badgeEl ? badgeEl.querySelector('strong') : null;
+                            const answerText = answerEl ? answerEl.innerText.trim() : '';
+                            if (!answerText) continue;
+                            const voteEl = box.querySelector('.upvote-count');
+                            let weight = voteEl ? parseInt(voteEl.innerText, 10) : 0;
+                            if (!(weight > 0)) weight = 1; // khong ro so upvote -> dem 1
+                            for (const letter of answerText.toUpperCase().replace(/[^A-F]/g, '')) {
+                                communityVotes.push({ letter: letter, weight: weight });
                             }
                         }
                     } catch (e) {}
 
-                    if (communityMostVoted.length === 0) {
-                        try {
-                            const mostVotedBadges = document.querySelectorAll('.most-voted-answer-badge');
-                            for (let badge of mostVotedBadges) {
-                                const item = badge.closest('.multi-choice-item');
-                                if (item) {
-                                    const letterEl = item.querySelector('.multi-choice-letter');
-                                    if (letterEl) {
-                                        const l = letterEl.getAttribute('data-choice-letter') || letterEl.innerText.replace(/\.$/, '').trim();
-                                        if (l && !communityMostVoted.includes(l)) {
-                                            communityMostVoted.push(l);
-                                        }
-                                    }
-                                }
-                            }
-                        } catch (e) {}
+                    if (communityVotes.length) {
+                        const totals = {};
+                        for (const v of communityVotes) {
+                            totals[v.letter] = (totals[v.letter] || 0) + v.weight;
+                        }
+                        const best = Math.max.apply(null, Object.keys(totals).map(k => totals[k]));
+                        // Chi ket luan khi co it nhat 2 luot upvote: 1 binh luan le
+                        // khong du tin cay de goi la "y kien cong dong".
+                        if (best >= 2) {
+                            communityMostVoted = Object.keys(totals)
+                                .filter(k => totals[k] === best)
+                                .sort();
+                        }
                     }
 
                     return {
@@ -880,9 +874,27 @@ def crawl_one_question(page, exam_code, topic, qnum):
             if is_correct and letter:
                 suggested_answers.append(letter)
 
+        # Duong du phong khi trang khong con markup lua chon: tach tu text de bai.
+        if not clean_options:
+            stem, split_opts = _split_options_from_text(clean_q)
+            if split_opts:
+                clean_q = stem
+                clean_options = split_opts
+
+        # Dap an CHINH THUC tu trang exam (chi q1..q10 mien phi) la nguon dang tin
+        # nhat; uu tien hon `suggested_answers` (von dua vao marker lua chon dung
+        # tren trang discussion -- nay khong con, xem comment trong evaluate).
+        # Danh dau luon lua chon dung de exporter hien dung.
+        official = (resolver.ANSWER_KEY.get(canonical_exam_code(exam_code)) or {}).get(qnum)
+        if official:
+            letters = [c for c in official.upper() if c.isalpha()]
+            suggested_answers = letters
+            for opt in clean_options:
+                opt["is_correct"] = opt.get("letter") in letters
+
         raw_most_voted = [str(x).strip() for x in (extracted_data.get("community_most_voted") or []) if str(x).strip()]
         clean_community_most_voted = list(dict.fromkeys(raw_most_voted))
-        community_votes = extracted_data.get("community_votes") or []
+        community_votes = _clean_community_votes(extracted_data.get("community_votes"))
         top_comments = _clean_top_comments(extracted_data.get("top_comments"))
 
         LOG.info(f"  Cau hoi: {clean_q[:100]}...")
@@ -903,6 +915,7 @@ def crawl_one_question(page, exam_code, topic, qnum):
             "question": clean_q,
             "question_images": clean_q_images,
             "options": clean_options,
+            "question_type": _detect_question_type(clean_q, clean_options),
             "suggested_answers": suggested_answers,
             "community_most_voted": clean_community_most_voted,
             "community_votes": community_votes,

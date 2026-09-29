@@ -34,6 +34,18 @@ def _env_str(name, default):
     return raw or default
 
 
+def _env_float(name, default):
+    """Doc bien moi truong dang so thuc, tra ve `default` neu thieu/khong hop le."""
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
 MIN_DELAY = _env_int("MIN_DELAY", 2)
 MAX_DELAY = _env_int("MAX_DELAY", 5)
 RETRY_LIMIT = _env_int("RETRY_LIMIT", 3)
@@ -43,6 +55,21 @@ BLOCKED_ABORT_STREAK = _env_int("BLOCKED_ABORT_STREAK", 3)
 RETRY_HTTP_ATTEMPTS = _env_int("RETRY_HTTP_ATTEMPTS", 2)
 RETRY_HTTP_BACKOFF = float(_env_int("RETRY_HTTP_BACKOFF", 1))
 
+# Khoang nghi toi thieu giua HAI request HTTP bat ky (giay).
+#
+# Do tren trang that (9/2026): 8 worker song song -> ~6 req/s, 0x429; 24 worker
+# -> 24x429 ngay lap tuc. Gian nhip + pool nho la du. Mac dinh 1s la muc toi
+# thieu an toan cho cac lan goi le te; cac buoc quet hang loat (harvest listing)
+# tu gian nhip rieng.
+REQUEST_INTERVAL = float(_env_int("REQUEST_INTERVAL", 1))
+
+# So lan thu lai khi gap 429/503 (DANG BI CHAN) truoc khi ket luan that bai.
+# KHONG ap dung cho 404: do tren trang that, khi bi chan MOI request deu tra 429
+# (24 song song -> 24x429, khong 404 nao), con 404 la TAT DINH cho cap (id, slug)
+# sai hoac cau bi go/paywall -> retry chi dot 28s vo ich.
+THROTTLE_ATTEMPTS = _env_int("THROTTLE_ATTEMPTS", 3)
+THROTTLE_BACKOFF = float(_env_int("THROTTLE_BACKOFF", 4))
+
 OUTPUT_DIR = _env_str("OUTPUT_DIR", "output")
 _IMG_CACHE_DIR = os.path.join(OUTPUT_DIR, ".imgcache")
 
@@ -50,6 +77,11 @@ DEFAULT_OP_TIMEOUT = _env_int("DEFAULT_OP_TIMEOUT", 30000)
 
 NO_DISCUSSION_BLOCKED = object()
 NO_DISCUSSION_MISSING = object()
+# Da tim ra link nhung link tra 404 THAT (cap id+slug khong ton tai, hoac cau bi
+# go/paywall). Khac `NO_DISCUSSION_MISSING` (search khong tra ve link nao) va
+# khac `NO_DISCUSSION_BLOCKED` (dang bi chan). Nguoi dung can biet day KHONG
+# phai loi tam thoi de khong chay lai vo ich.
+NO_DISCUSSION_GATED = object()
 
 SEARCH_OK = "ok"
 SEARCH_EMPTY = "empty"
@@ -157,10 +189,6 @@ _RE_NOISE_COMMENT = re.compile(
     r')',
     re.I,
 )
-# Endpoint tra ve fragment HTML chua TOAN BO binh luan cua mot discussion.
-# Trang discussion chi render san ~20-25 binh luan dau; phan con lai nam sau
-# nut "Load full discussion..." va chi lay duoc qua AJAX nay.
-LOAD_COMPLETE_URL = "https://www.examtopics.com/ajax/discussion/load-complete/"
 _RE_EXAMTOPICS_URL = re.compile(r'https?://(?:www\.)?examtopics\.com/[^\s&"\'<>]+', re.I)
 _RE_DISCUSSION_SLUG = re.compile(
     r'exam-(?P<code>.+?)-topic-(?P<topic>\d+)-question-(?P<qnum>\d+)-discussion',

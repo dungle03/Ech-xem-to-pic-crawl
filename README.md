@@ -17,7 +17,7 @@ Tự động thu thập câu hỏi từ ExamTopics, lưu kết quả dưới d�
 * Trang HTML có hai chế độ: ôn tập chủ động (tìm kiếm, che/mở đáp án, đánh dấu câu cần ôn) và thi thử có hẹn giờ/chấm điểm.
 * Tải ảnh song song khi convert DOCX (10 luồng).
 * Nạp nội dung thảo luận siêu tốc qua HTTP-first (~1s thay vì 15s chờ tải quảng cáo/tracker).
-* Nạp **đầy đủ bình luận**: trang ExamTopics chỉ render sẵn ~20-25 bình luận đầu, phần còn lại nằm sau nút "Load full discussion..." — tool tự gọi AJAX để lấy hết thay vì cắt cụt thảo luận.
+* **Đáp án cộng đồng**: suy ra từ badge `Selected Answer: X` của từng bình luận, cộng dồn theo số upvote (site đã bỏ `.voted-answers-tally`).
 * Cơ chế Opportunistic Link Harvester: tự động gom và nhớ các link discussion xuất hiện trên trang tìm kiếm để tái sử dụng, bỏ qua tìm kiếm khi đã có sẵn link.
 * Hỗ trợ tham số `--proxy` (HTTP/SOCKS5) bảo vệ IP và hỗ trợ crawl quy mô lớn.
 * Fallback tải trang qua HTTP khi trình duyệt load trang discussion bị treo.
@@ -120,9 +120,16 @@ Hai flag loại trừ nhau (dùng cùng lúc sẽ báo lỗi).
 Với mỗi câu hỏi, tool vận hành theo luồng tối ưu:
 
 1. **Kiểm tra bộ nhớ đệm (Link Cache)**: Nếu câu hỏi đã có link trong cache (từ file JSON cũ hoặc được thu thập từ các lần tìm kiếm trước), tool dùng ngay mà không cần tìm kiếm.
-2. **Tìm kiếm thông minh**: Nếu chưa có trong cache, tool gõ query vào DuckDuckGo (kèm `site:examtopics.com`). Trong quá trình này, tool tự động gom tất cả các link câu hỏi khác xuất hiện trên trang tìm kiếm để dùng lại cho các câu sau. Nếu DuckDuckGo không ra link khớp, tự chuyển sang Google.
-3. **Nạp nội dung siêu tốc (Fast HTTP-first)**: Dùng `httpx` nạp trực tiếp mã nguồn HTML đã bypass Cloudflare vào tab (~1s) thay vì chờ 15s tải quảng cáo/tracker; tự động fallback sang điều hướng thông thường trong trình duyệt nếu HTTP gặp lỗi.
-4. **Nạp đầy đủ bình luận**: ExamTopics chỉ render sẵn ~20-25 bình luận đầu và giấu phần còn lại sau nút "Load full discussion...". Tool gọi AJAX `load-complete` để thay khối bình luận bằng bản đầy đủ trước khi bóc dữ liệu. Nếu trang không có nút (nghĩa là đã đầy đủ) thì bỏ qua, không tốn request. Bước này chỉ thay `.outer-discussion-container` — đề bài, lựa chọn, đáp án và bảng vote nằm ngoài container đó nên không bị ảnh hưởng; nếu AJAX lỗi thì DOM giữ nguyên.
+2. **Giải tất định từ trang liệt kê của vendor**: Tool tìm category thật của mã đề qua `/search/?q=<mã đề>` (category BẮT BUỘC — `/exams/<mã>/<mã>/` trả 404), rồi quét `/discussions/<category>/<n>/` để lấy URL discussion thật. Nhờ đó phần lớn câu được giải **không cần search engine**. Kết quả lưu ở `output/.discussion_urls.json` nên các lần chạy sau không phải dò lại.
+3. **Tìm kiếm thông minh**: Câu không có trong danh sách trên mới cần search. Tool gõ query vào DuckDuckGo (kèm `site:examtopics.com`). Trong quá trình này, tool tự động gom tất cả các link câu hỏi khác xuất hiện trên trang tìm kiếm để dùng lại cho các câu sau. Nếu DuckDuckGo không ra link khớp, tự chuyển sang Google.
+4. **Nạp nội dung siêu tốc (Fast HTTP-first)**: Dùng `httpx` nạp trực tiếp mã nguồn HTML đã bypass Cloudflare vào tab (~1s) thay vì chờ 15s tải quảng cáo/tracker. **Chỉ fallback sang điều hướng trình duyệt khi lỗi TẠM THỜI** (429/503/lỗi mạng): nếu HTTP trả **404** thì thoát ngay và báo "câu bị paywall/gỡ bỏ" — mở browser cho link 404 chỉ tạo `ERR_HTTP_RESPONSE_CODE_FAILURE` rồi treo ~15s.
+5. **Giãn nhịp & chống chặn**: Mọi request HTTP đi qua `resolver.fetch_html` để được giãn nhịp toàn cục. Đo trên trang thật: 8 worker song song → ~6 req/s, 0×429; 24 worker → 24×429 ngay lập tức. **Chỉ 429/503 mới thử lại** (tôn trọng header `Retry-After`); **404 là tất định** (cặp `id`+`slug` sai hoặc câu bị gỡ/paywall) nên kết thúc ngay, không đốt 28s backoff. Link 404 được ghi nhớ có thời hạn để không đâm lại.
+6. **Bóc lựa chọn & đáp án**: Trang discussion không còn markup `.multi-choice-item`, nên lựa chọn được tách từ text đề bài (chỉ tách khi thấy A, B, C… liên tiếp từ A). Với q1–q10, tool lấy thêm **đáp án chính thức** từ trang exam (`Correct Answer: AD`). Với câu không có A/B/C/D (HOTSPOT, DRAG DROP…), tool gắn `question_type` và hiển thị lý do thay vì để trống im lặng.
+7. **Đáp án cộng đồng**: `.voted-answers-tally` và `.most-voted-answer-badge` đã bị site bỏ, nên tool suy ra `community_most_voted` từ badge `Selected Answer: X` của từng bình luận, **cộng dồn theo số upvote** (`Selected Answer: B` trên bình luận 21 upvote → B). Chỉ kết luận khi tổng ≥ 2 để tránh một bình luận lẻ.
+
+### Giới hạn đã biết
+
+ExamTopics chỉ trả công khai một phần đề. Với `hqt-4180` (đề ghi 108 câu), phần truy cập được là **45 câu** có discussion trong trang liệt kê của vendor; q11+ trên trang exam và các câu mới thêm bị chặn sau đăng nhập (trả 404 với khách vãng lai). Đã kiểm chứng: 11 câu còn thiếu (32, 36, 39, 40, 42, 43, 46, 47, 49, 52, 54) trả 404 với **mọi** biến thể slug và từ nhiều IP — đây là paywall/gỡ bỏ, **không cứu được bằng cách đoán id**. Tool lấy tối đa phần công khai và ghi các câu còn thiếu vào `output/{exam_code}_errors.json`.
 
 ## Kết quả
 
@@ -162,13 +169,18 @@ Ghi chú:
 * `examtopic/`: Gói module lõi phân tách theo trách nhiệm:
   * `config.py`: Quản lý cấu hình engine, hằng số, proxy và cache ảnh 2 tầng.
   * `parser.py`: Chuẩn hóa mã đề, so khớp slug, unwrap redirect và lưu JSON atomic.
-  * `resolver.py`: Giải URL discussion **không cần search engine** bằng `question_id`
-    + AJAX của ExamTopics (có verify title trước khi dùng). Anchor đến từ trang exam
-    và từ mỗi câu đã crawl, lưu ở `output/.anchors.json`.
+  * `resolver.py`: Giải URL discussion **không cần search engine**. Tìm category
+    thật của mã đề qua `/search/?q=<mã đề>` (category BẮT BUỘC — `/exams/<mã>/<mã>/`
+    trả 404), rồi quét trang liệt kê của vendor `/discussions/<category>/<n>/` để
+    lấy URL discussion thật. Đáp án chính thức (q1–q10) lấy từ trang exam. Chi mục
+    lưu ở `output/.discussion_urls.json`.
   * `crawler.py`: Điều phối tìm kiếm, nạp discussion, đồng bộ session và bóc dữ liệu.
+    Mọi request HTTP đi qua `resolver.fetch_html` để được **giãn nhịp toàn cục** —
+    ~9–11 request nhanh liên tiếp là Cloudflare chặn, và khi bị chặn trang còn trả
+    **404 rỗng cho URL đúng**, nên 404 phải coi là "chưa chắc" và thử lại.
   * `exporters/`: Dựng HTML ôn tập/thi thử (`html.py`) và Word kèm Answer Key (`docx.py`).
 * `tool.py`: CLI entrypoint điều phối chính, re-export 100% tương thích ngược.
-* `test_tool.py`: Bộ unit tests tự động kiểm thử toàn bộ luồng xử lý (hiện có 146 test).
+* `test_tool.py`: Bộ unit tests tự động kiểm thử toàn bộ luồng xử lý (hiện có 156 test).
 * `docs/crawl-flow.html`: Sơ đồ tương tác luồng crawl (nguồn: `crawl-flow.workflow.json`).
 
 ### Kiểm thử
