@@ -210,8 +210,9 @@ Các giá trị dưới đây đọc từ **biến môi trường** khi khởi �
 | `MAX_DELAY` | Nghỉ tối đa giữa các câu (giây) | 5 |
 | `RETRY_LIMIT` | Số lần retry khi lỗi | 3 |
 | `BLOCKED_ABORT_STREAK` | Số câu bị chặn liên tiếp thì dừng phiên | 3 |
-| `RETRY_HTTP_ATTEMPTS` | Số lần thử lại HTTP khi gặp 429/503 | 2 |
-| `RETRY_HTTP_BACKOFF` | Backoff giữa các lần thử lại (giây) | 1 |
+| `REQUEST_INTERVAL` | Nghỉ tối thiểu giữa hai request HTTP (giây) | 1 |
+| `THROTTLE_ATTEMPTS` | Số lần thử lại khi gặp 429/503 | 3 |
+| `THROTTLE_BACKOFF` | Backoff gốc giữa các lần thử lại (giây) | 4 |
 | `DEFAULT_OP_TIMEOUT` | Timeout thao tác trình duyệt (ms) | 30000 |
 | `OUTPUT_DIR` | Thư mục lưu kết quả | `output` |
 

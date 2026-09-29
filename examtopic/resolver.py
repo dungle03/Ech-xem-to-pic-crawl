@@ -467,23 +467,6 @@ def _parse_answer_key(html):
 # ---------------------------------------------------------------------------
 # API chinh
 # ---------------------------------------------------------------------------
-def discussion_url(discussion_id, exam_code, topic, qnum, category=None):
-    """Dung URL discussion chuan tu discussion_id.
-
-    Slug ma de trong URL PHAI giu nguyen gach ngang nhu site viet
-    (`hqt-4180`), KHONG duoc bo het ky tu khong phai chu/so. Da do tren trang
-    that: `-exam-hqt-4180-` -> 200, `-exam-hqt4180-` -> 404. Dau CHAM thi nguoc
-    lai: `-exam-h12-711_v4.0-` -> 404, `-exam-h12-711-v4-0-` -> 200.
-    """
-    norm = normalize_exam_code(exam_code)
-    slug = re.sub(r'[_.]', '-', norm)
-    slug = re.sub(r'-+', '-', slug).strip('-') or "exam"
-    cat = normalize_exam_code(category) if category else slug
-    cat = re.sub(r'[_.]', '-', cat).strip('-') or "exam"
-    return (f"{BASE}/discussions/{cat}/view/{discussion_id}-exam-{slug}-"
-            f"topic-{int(topic)}-question-{int(qnum)}-discussion/")
-
-
 def is_dead(url):
     """URL nay da duoc xac nhan chet va con trong thoi gian cooldown?"""
     deadline = _DEAD_URLS.get(url)

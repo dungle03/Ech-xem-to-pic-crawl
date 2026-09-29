@@ -4840,7 +4840,7 @@
       </div>
     </div>
 
-    <script id="archify-guided-views-data" type="application/json">[{"id":"chuan-bi","label":"Chuẩn bị","focus":["startup"],"note":"Nạp cache link cũ và seed 10 anchor từ trang exam trước khi crawl."},{"id":"tim-link","label":"Bốn tầng tìm link","focus":["startup","resolve","ddg","google"],"note":"Cache, rồi resolver tất định, rồi DuckDuckGo, cuối cùng mới tới Google."},{"id":"nap-boc","label":"Nạp trang và bóc dữ liệu","focus":["nap_boc","convert"],"note":"Nạp qua HTTP cho nhanh, bóc và lưu ngay, cuối phiên chuyển sang HTML và DOCX."},{"id":"ket-thuc","label":"Nhánh lỗi","focus":["no_link","google"],"note":"Câu không có link bị ghi vào file lỗi riêng, không trộn vào file dữ liệu chính."}]</script>
+    <script id="archify-guided-views-data" type="application/json">[{"id":"chuan-bi","label":"Chuẩn bị","focus":["startup"],"note":"Nạp chỉ mục URL discussion cũ và quét trang liệt kê vendor trước khi crawl."},{"id":"tim-link","label":"Bốn tầng tìm link","focus":["startup","resolve","ddg","google"],"note":"Cache, rồi resolver tất định, rồi DuckDuckGo, cuối cùng mới tới Google."},{"id":"nap-boc","label":"Nạp trang và bóc dữ liệu","focus":["nap_boc","convert"],"note":"Nạp qua HTTP cho nhanh, bóc và lưu ngay, cuối phiên chuyển sang HTML và DOCX."},{"id":"ket-thuc","label":"Nhánh lỗi","focus":["no_link","google"],"note":"Câu không có link bị ghi vào file lỗi riêng, không trộn vào file dữ liệu chính."}]</script>
 
     <div class="guided-views no-print" id="guided-views" hidden aria-label="Guided diagram views">
       <button id="guided-view-prev" type="button" aria-label="Previous guided view" title="Previous guided view ([)">&#8592;</button>
@@ -5249,7 +5249,7 @@
         </div>
         <ul>
           <li>&bull; Cache link cũ: dùng lại URL đã crawl, không tốn request</li>
-          <li>&bull; Resolver: AJAX question_id, verify title, không search</li>
+          <li>&bull; Resolver: quét trang liệt kê vendor, không cần search</li>
           <li>&bull; DuckDuckGo bằng URL trực tiếp ~2s, gõ tay là dự phòng</li>
           <li>&bull; Google chỉ gọi khi DuckDuckGo đã hết cách</li>
         </ul>
@@ -5261,8 +5261,8 @@
           <h3>Vì sao chạy lại càng nhanh</h3>
         </div>
         <ul>
-          <li>&bull; Mỗi câu crawl xong tự ghi question_id vào .anchors.json</li>
-          <li>&bull; question_id liên mạch theo khối nên giải được cả khối</li>
+          <li>&bull; Mỗi câu giải xong ghi URL thật vào .discussion_urls.json</li>
+          <li>&bull; Nguồn là trang liệt kê vendor, không cần search engine</li>
           <li>&bull; Chạy lại đề đã crawl gần như không cần search</li>
           <li>&bull; Lần chạy lại ccaak: 91/91 câu đi đường tất định</li>
         </ul>
@@ -5274,9 +5274,9 @@
           <h3>Giới hạn đã đo</h3>
         </div>
         <ul>
-          <li>&bull; Phân trang view/2 bị CAPTCHA nên không lấy thêm anchor</li>
+          <li>&bull; Trang exam chỉ trả 10 câu đầu (q11+ đòi đăng nhập)</li>
           <li>&bull; Đề nhiều topic: trang exam chỉ lộ topic 1</li>
-          <li>&bull; Đề bị chặn trang exam vẫn chạy nhờ anchor từ link cũ</li>
+          <li>&bull; Câu thiếu trong listing thường là bị paywall/gỡ (HTTP 404 thật)</li>
           <li>&bull; Câu ngoài khối đã biết vẫn phải search một lần</li>
         </ul>
       </div>

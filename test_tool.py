@@ -481,20 +481,16 @@ class TestDeterministicResolver(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     # -- slug / URL ------------------------------------------------------
-    def test_discussion_url_keeps_hyphen_in_exam_slug(self):
-        """Gach ngang trong ma de PHAI duoc giu.
+    def test_slug_variants_keep_hyphen_in_exam_slug(self):
+        """Gach ngang trong ma de PHAI duoc giu (khong bi xoa thanh hqt4180).
 
         Do tren trang that: `-exam-hqt-4180-topic-` -> 200, con
         `-exam-hqt4180-topic-` -> 404. Ban cu dung `canonical_exam_code` (xoa het
         ky tu khong phai chu/so) nen moi ma de co gach ngang sinh URL chet.
         """
-        url = self.R.discussion_url("99394", "hqt-4180", 1, 5, category="hitachi")
-        self.assertEqual(
-            url,
-            "https://www.examtopics.com/discussions/hitachi/view/"
-            "99394-exam-hqt-4180-topic-1-question-5-discussion/")
+        self.assertIn("hqt-4180", self.R.exam_slug_variants("hqt-4180"))
 
-    def test_discussion_url_strips_dots_and_underscores(self):
+    def test_slug_variants_strip_dots_and_underscores(self):
         """Dau CHAM/GACH DUOI thi nguoc lai: site doi thanh gach ngang.
 
         `H12-711_V4.0` -> `h12-711-v4-0` (200), khong phai `h12-711_v4.0` (404).
@@ -503,11 +499,14 @@ class TestDeterministicResolver(unittest.TestCase):
             ("H12-711_V4.0", "h12-711-v4-0"),
             ("H12-411_V2.0", "h12-411-v2-0"),
             ("FCSS_NST_SE-7.6", "fcss-nst-se-7-6"),
-            ("sk0-005", "sk0-005"),
-            ("ccaak", "ccaak"),
         ):
-            url = self.R.discussion_url("325747", code, 1, 1, category="huawei")
-            self.assertIn(f"-exam-{expected_slug}-topic-1-question-1-discussion/", url)
+            self.assertIn(expected_slug, self.R.exam_slug_variants(code))
+
+    def test_discussion_url_helper_removed(self):
+        """`discussion_url` la dead code: khong ai goi ngoai test, va
+        `harvest_listing` tu dung URL tu trang liet ke. Xoa de khong co hai
+        nguon su that cho cung mot quy tac slug (de troi lech nhau)."""
+        self.assertFalse(hasattr(self.R, "discussion_url"))
 
     def test_slug_variants_cover_dotted_codes(self):
         """Phai thu ca dang gach ngang lan dang bo dau cham, khong doan bua."""

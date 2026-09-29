@@ -51,10 +51,6 @@ MAX_DELAY = _env_int("MAX_DELAY", 5)
 RETRY_LIMIT = _env_int("RETRY_LIMIT", 3)
 BLOCKED_ABORT_STREAK = _env_int("BLOCKED_ABORT_STREAK", 3)
 
-# Retry tai discussion bang HTTP khi Cloudflare tra 429/503 giua phien.
-RETRY_HTTP_ATTEMPTS = _env_int("RETRY_HTTP_ATTEMPTS", 2)
-RETRY_HTTP_BACKOFF = float(_env_int("RETRY_HTTP_BACKOFF", 1))
-
 # Khoang nghi toi thieu giua HAI request HTTP bat ky (giay).
 #
 # Do tren trang that (9/2026): 8 worker song song -> ~6 req/s, 0x429; 24 worker
@@ -105,13 +101,6 @@ _PROXY = None
 #
 # Mac dinh (khong co flag) cho ra output Y HET phan lon truong hop cu.
 LOG = logging.getLogger("examtopic")
-
-_LEVEL_STYLES = {
-    logging.DEBUG: "verbose",
-    logging.INFO: "normal",
-    logging.WARNING: "normal",
-    logging.ERROR: "normal",
-}
 
 
 class _PlainFormatter(logging.Formatter):
@@ -311,7 +300,7 @@ def _preload_images(questions):
             futures = {pool.submit(_fetch_image_bytes, u, client): u for u in todo}
             done = 0
             step = max(1, total_imgs // 5) if total_imgs > 20 else 5
-            for future in as_completed(futures):
+            for _ in as_completed(futures):
                 done += 1
                 if done % step == 0 or done == total_imgs:
                     # Giu o INFO de output mac dinh KHONG doi so voi truoc.
