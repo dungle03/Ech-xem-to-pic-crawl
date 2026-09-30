@@ -12,6 +12,8 @@ from examtopic import (
     MAX_DELAY,
     RETRY_LIMIT,
     BLOCKED_ABORT_STREAK,
+    SECOND_PASS_ATTEMPTS,
+    SECOND_PASS_DELAY,
     OUTPUT_DIR,
     DEFAULT_OP_TIMEOUT,
     NO_DISCUSSION_BLOCKED,
@@ -71,6 +73,8 @@ __all__ = [
     "MAX_DELAY",
     "RETRY_LIMIT",
     "BLOCKED_ABORT_STREAK",
+    "SECOND_PASS_ATTEMPTS",
+    "SECOND_PASS_DELAY",
     "OUTPUT_DIR",
     "LOG",
     "configure_logging",
@@ -126,6 +130,7 @@ __all__ = [
     "_set_default_font",
     "parse_args",
     "record_error",
+    "second_pass",
     "main",
 ]
 
@@ -150,6 +155,70 @@ def record_error(record, errors):
     khai `tool.record_error`.
     """
     errors.append(record)
+
+
+def second_pass(page, search_code, topic, retry_qs, all_data, filename,
+                failed, failed_blocked, failed_missing, failed_gated,
+                error_records, attempts=None, delay=None):
+    """Thu lai cac cau that bai voi toc do CHAM. Tra ve danh sach cau phuc hoi.
+
+    Vi sao can: do tren trang that, 404 doi khi chi la chan TAM thoi chu khong
+    phai cau bi go vinh vien -- q32 hqt-4180 va 29 cau ccdak tra 404 luc tai
+    cao, roi 200 khi tai giam. Crawl chinh chay nhanh nen de "rot" cac cau nay;
+    second pass chay cham de bat lai.
+
+    Xoa `_DEAD_URLS` truoc khi chay: khong co buoc nay thi no se bo qua dung
+    nhung cau 404 vua roi, tuc la khong thu lai cau nao ca.
+
+    Cac list `failed*` va `error_records` duoc sua TAI CHO de caller thay ket qua.
+    """
+    attempts = SECOND_PASS_ATTEMPTS if attempts is None else attempts
+    delay = SECOND_PASS_DELAY if delay is None else delay
+    recovered = []
+    if not retry_qs or attempts <= 0:
+        return recovered
+
+    LOG.info("\n" + "="*60)
+    LOG.info(f"SECOND PASS: thu lai {len(retry_qs)} cau that bai "
+             f"(toc do cham, {attempts} lan)...")
+    LOG.info("="*60)
+    try:
+        resolver.clear_dead_urls()
+    except Exception:
+        pass
+
+    for idx, qnum in enumerate(retry_qs, 1):
+        LOG.info(f"\n[second pass {idx}/{len(retry_qs)}] cau {qnum}")
+        time.sleep(delay)  # nghi cham de tai thuc su ha xuong
+        result = None
+        for attempt in range(1, attempts + 1):
+            result = crawl_one_question(page, search_code, topic, qnum)
+            if isinstance(result, dict):
+                break
+            if result in (NO_DISCUSSION_BLOCKED, NO_DISCUSSION_MISSING,
+                          NO_DISCUSSION_GATED):
+                break
+            if attempt < attempts:
+                time.sleep(delay)
+        if not isinstance(result, dict):
+            continue
+        upsert(all_data, result)
+        recovered.append(qnum)
+        if qnum in failed:
+            failed.remove(qnum)
+        for lst in (failed_blocked, failed_missing, failed_gated):
+            if qnum in lst:
+                lst.remove(qnum)
+        kept = [r for r in error_records if not _same_question(r, topic, qnum)]
+        if len(kept) != len(error_records):
+            error_records[:] = kept
+        save_progress(all_data, filename)
+        LOG.info(f"  [second pass] Lay duoc cau {qnum} (truoc day that bai).")
+
+    if recovered:
+        LOG.info(f"\n[second pass] Phuc hoi them {len(recovered)} cau: "
+                 f"{', '.join(map(str, recovered))}")
+    return recovered
 
 
 def parse_args():
@@ -324,8 +393,8 @@ def main():
                                           "DuckDuckGo va Google da search nhung khong co link dung cau")
                         break
                     if result is NO_DISCUSSION_GATED:
-                        no_link_reason = ("Cau bi paywall/go bo: link tim duoc tra HTTP 404 "
-                                          "(khong phai loi tam thoi, thu lai vo ich)")
+                        no_link_reason = ("Link tim duoc tra HTTP 404 (bi go/paywall, "
+                                          "hoac chan tam; second pass se thu lai cham)")
                         break
                     if isinstance(result, dict):
                         break
@@ -396,6 +465,18 @@ def main():
             interrupted = True
             LOG.info("\n\n[!] Da dung theo yeu cau nguoi dung (Ctrl+C).")
 
+        # SECOND PASS: thu lai cac cau that bai voi toc do CHAM (xem docstring
+        # `second_pass`). Bo qua khi nguoi dung Ctrl+C, khi khong co cau nao
+        # that bai, hoac khi SECOND_PASS_ATTEMPTS=0.
+        if not interrupted and failed and SECOND_PASS_ATTEMPTS > 0:
+            retry_qs = [q for q in failed if q not in failed_blocked]
+            newly = second_pass(
+                page, search_code, topic, retry_qs, all_data, filename,
+                failed, failed_blocked, failed_missing, failed_gated,
+                error_records,
+            )
+            added += len(newly)
+
         LOG.info("\n"+"="*60)
         status_label = "Tam dung!" if interrupted else ("Dung som vi bi chan!" if aborted else "Hoan tat!")
         LOG.info(f"{status_label} Lay duoc {added}/{total} cau trong phien nay (tong file: {len(all_data)}).")
@@ -409,9 +490,11 @@ def main():
             # la khong tim thay link nao khop cau.
             LOG.info(f"  Vi khong tim thay link discussion khop cau: {', '.join(map(str, failed_missing))}")
         if failed_gated:
-            # Day KHONG phai loi tam thoi: link tim duoc tra 404 that (cap id+slug
-            # khong ton tai, hoac cau bi go/paywall). Chay lai se khong giup gi.
-            LOG.info(f"  Vi cau bi paywall/go bo (HTTP 404 that, chay lai khong giup): "
+            # Link tim duoc tra 404. Phan lon la cau bi go/paywall, NHUNG mot so
+            # co the chi bi chan tam (da do duoc: 404 roi sau do 200). Second
+            # pass o tren da thu lai mot lan cham; neu van 404 thi kha nang cao
+            # la cau da bi go that.
+            LOG.info(f"  Vi link tra HTTP 404 (bi go/paywall, hoac chan tam da thu lai o second pass): "
                      f"{', '.join(map(str, failed_gated))}")
         LOG.info(f"Ket qua: output/{filename}")
         # Ghi ca khi danh sach loi rong: neu lan nay da lay duoc het cac cau tung

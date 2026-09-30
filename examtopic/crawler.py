@@ -625,18 +625,21 @@ def crawl_one_question(page, exam_code, topic, qnum):
             if loaded:
                 LOG.info("  Da nap noi dung tuc thi qua HTTP (~1s)")
             elif http_status == 404:
-                # 404 la TAT DINH (cap id+slug khong ton tai, hoac cau bi go/
-                # paywall). Mo browser cho link nay chi tao
+                # 404: KHONG mo browser. Mo browser cho link nay chi tao
                 # `Page.goto: ERR_HTTP_RESPONSE_CODE_FAILURE` roi treo ~15s ->
-                # dung hien tuong "mo link blank va cho" nguoi dung bao. Thoat
-                # ngay, va bao ro day KHONG phai loi tam thoi.
-                LOG.info("  HTTP 404: link khong ton tai hoac cau bi paywall/go bo.")
+                # dung hien tuong "mo link blank va cho" nguoi dung bao.
+                #
+                # Nhung KHONG ket luan "cau bi go vinh vien": do tren trang that,
+                # 404 doi khi chi la chan tam (q32 hqt-4180, 29 cau ccdak tra 404
+                # luc tai cao roi 200 khi tai giam). Vi vay mark_url_dead chi giu
+                # cooldown NGAN (60s) de second pass cuoi phien con thu lai duoc.
+                LOG.info("  HTTP 404: link khong ton tai ngay luc nay "
+                         "(co the bi go/paywall, hoac chan tam - second pass se thu lai).")
                 forget_harvested_link(exam_code, topic, qnum)
                 try:
                     resolver.mark_url_dead(href, exam_code, topic, qnum)
                 except Exception:
                     pass
-                LOG.info("  Da loai link 404 khoi chi muc (se khong thu lai trong thoi gian cooldown).")
                 return NO_DISCUSSION_GATED
             else:
                 LOG.info("  HTTP load khong thanh cong, thu dieu huong truc tiep trong browser...")

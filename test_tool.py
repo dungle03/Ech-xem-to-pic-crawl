@@ -998,11 +998,21 @@ class TestUpsertRobustKeys(unittest.TestCase):
 class TestHttpRetryBackoff(unittest.TestCase):
     """Retry khi bi chan nam trong `resolver.fetch_html` (dung chung moi duong).
 
-    Do tren trang that (9/2026): 8 worker song song -> ~6 req/s, 0x429; 24 worker
-    -> 24x429 ngay lap tuc, va khi bi chan thi MOI request deu tra 429 (khong co
-    404 nao). Con 404 la TAT DINH cho cap (id, slug) sai hoac cau bi go/paywall.
-    Vi vay CHI 429/503 duoc retry; 404 ket thuc ngay.
+    Do tren trang that (9/2026): khi bi chan thi MOI request deu tra 429 (burst
+    60 song song -> 60x429, khong co 404 nao), nen CHI 429/503 duoc retry con 404
+    ket thuc ngay. Nhung 404 doi khi chi la chan tam (q32 hqt-4180, 29 cau ccdak
+    tra 404 luc tai cao roi 200), nen co cooldown NGAN + second pass cuoi phien.
     """
+
+    def setUp(self):
+        # `_DEAD_URLS` la state module-level: khong xoa thi mot test 404 se dau
+        # doc cac test sau (da gap flaky that).
+        from examtopic import resolver
+        resolver.clear_dead_urls()
+
+    def tearDown(self):
+        from examtopic import resolver
+        resolver.clear_dead_urls()
 
     def test_retries_on_429_then_succeeds(self):
         from examtopic import resolver
@@ -1120,7 +1130,7 @@ class TestHttpRetryBackoff(unittest.TestCase):
                          "URL da biet chet khong duoc goi lai")
 
     def test_dead_url_expires_after_cooldown(self):
-        """404 cung co the do cau duoc cong khai lai -> sau cooldown phai cho thu lai."""
+        """404 co the do chan tam -> sau cooldown phai cho thu lai."""
         from examtopic import resolver
         url = "https://x.test/maybe"
         resp = MagicMock(status_code=404, text="")
@@ -1134,6 +1144,35 @@ class TestHttpRetryBackoff(unittest.TestCase):
              patch("examtopic.resolver.time.sleep"):
             resolver.fetch_html(url)
         self.assertGreater(mock_get2.call_count, 0)
+
+    def test_dead_url_cooldown_is_short(self):
+        """Cooldown 404 phai NGAN (mac dinh 60s).
+
+        Do tren trang that: 404 doi khi chi la chan tam (q32 hqt-4180 va 29 cau
+        ccdak tra 404 luc tai cao roi 200 khi tai giam). Cooldown dai (300s cu)
+        se khien second pass / lan chay lai bo qua dung cau can thu lai nhat.
+        """
+        from examtopic import resolver
+        self.assertLessEqual(resolver.DEAD_URL_COOLDOWN, 120,
+                             "cooldown 404 phai du ngan de second pass thu lai duoc")
+
+    def test_clear_dead_urls_lets_second_pass_retry(self):
+        """clear_dead_urls phai xoa het bo nho chet de second pass thu lai.
+
+        Khong co buoc nay thi second pass vo nghia: no se bo qua dung nhung cau
+        404 vua roi, tuc la khong thu lai cau nao ca.
+        """
+        from examtopic import resolver
+        resolver._DEAD_URLS["https://x.test/a"] = 9e9
+        resolver._DEAD_URLS["https://x.test/b"] = 9e9
+        resolver.clear_dead_urls()
+        self.assertEqual(resolver._DEAD_URLS, {})
+
+    def test_second_pass_config_defaults(self):
+        """Second pass phai co config ro rang, va tat duoc bang 0."""
+        from examtopic import SECOND_PASS_ATTEMPTS, SECOND_PASS_DELAY
+        self.assertGreaterEqual(SECOND_PASS_ATTEMPTS, 0)
+        self.assertGreater(SECOND_PASS_DELAY, 0)
 
     def test_fetch_html_status_reports_404(self):
         """fetch_html_status phai tra status de caller phan biet 404 voi 429."""
@@ -1181,6 +1220,99 @@ class TestRecordError(unittest.TestCase):
         self.assertEqual(len(errors), 2)
         self.assertEqual(errors[0]["question_num"], 2)
         self.assertNotIn("question", errors[0])
+
+
+class TestSecondPass(unittest.TestCase):
+    """Second pass thu lai cau that bai voi toc do cham.
+
+    Ly do ton tai: do tren trang that, 404 doi khi chi la chan TAM thoi -- q32
+    hqt-4180 va 29 cau ccdak tra 404 luc tai cao roi 200 khi tai giam. Crawl
+    chinh chay nhanh nen "rot" cac cau nay; second pass bat lai.
+    """
+
+    def setUp(self):
+        from examtopic import resolver
+        resolver.clear_dead_urls()
+        self.tmp = tempfile.mkdtemp()
+        self._old = resolver.OUTPUT_DIR
+        resolver.OUTPUT_DIR = self.tmp
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        from examtopic import resolver
+        resolver.OUTPUT_DIR = self._old
+        resolver.clear_dead_urls()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run(self, results, retry_qs=(3, 5)):
+        """Chay second_pass voi `crawl_one_question` gia lap tra ve `results`."""
+        from tool import second_pass
+        all_data, failed, fb, fm, fg, errs = [], list(retry_qs), [], [], [], []
+        with patch("tool.crawl_one_question", side_effect=results), \
+             patch("tool.time.sleep"), \
+             patch("tool.save_progress"):
+            recovered = second_pass(
+                object(), "x", 1, list(retry_qs), all_data, "x_questions.json",
+                failed, fb, fm, fg, errs, attempts=1, delay=0,
+            )
+        return recovered, all_data, failed, errs
+
+    def test_recovers_question_and_clears_error(self):
+        """Cau thu lai thanh cong phai vao all_data, roi khoi failed/errors."""
+        rec3 = {"topic": 1, "question_num": 3, "question": "q", "options": []}
+        rec5 = {"topic": 1, "question_num": 5, "question": "q", "options": []}
+        recovered, all_data, failed, errs = self._run([rec3, rec5])
+        self.assertEqual(recovered, [3, 5])
+        self.assertEqual(len(all_data), 2)
+        self.assertEqual(failed, [])
+
+    def test_removes_stale_error_record_for_recovered_question(self):
+        """Ban ghi loi cu cua cau vua phuc hoi phai bi xoa khoi .errors.json."""
+        from tool import second_pass
+        rec3 = {"topic": 1, "question_num": 3, "question": "q", "options": []}
+        all_data, failed = [], [3]
+        errs = [{"topic": 1, "question_num": 3, "error": "404"}]
+        with patch("tool.crawl_one_question", return_value=rec3), \
+             patch("tool.time.sleep"), patch("tool.save_progress"):
+            second_pass(object(), "x", 1, [3], all_data, "f.json",
+                        failed, [], [], [], errs, attempts=1, delay=0)
+        self.assertEqual(errs, [], "loi cu phai bi xoa khi cau da lay duoc")
+
+    def test_keeps_question_when_still_failing(self):
+        """Cau van that bai thi khong vao all_data, khong phuc hoi."""
+        from examtopic import NO_DISCUSSION_GATED
+        recovered, all_data, failed, _ = self._run([NO_DISCUSSION_GATED, NO_DISCUSSION_GATED])
+        self.assertEqual(recovered, [])
+        self.assertEqual(all_data, [])
+        self.assertIn(3, failed)
+
+    def test_clears_dead_url_cache_so_retry_happens(self):
+        """Phai xoa `_DEAD_URLS` truoc khi thu lai, neu khong se bo qua het."""
+        from examtopic import resolver
+        resolver._DEAD_URLS["https://x.test/a"] = 9e9
+        from tool import second_pass
+        with patch("tool.crawl_one_question", return_value=None), \
+             patch("tool.time.sleep"), patch("tool.save_progress"):
+            second_pass(object(), "x", 1, [3], [], "f.json", [3], [], [], [], [],
+                        attempts=1, delay=0)
+        self.assertEqual(resolver._DEAD_URLS, {},
+                         "second pass phai xoa bo nho URL chet de thu lai duoc")
+
+    def test_empty_retry_list_is_noop(self):
+        from tool import second_pass
+        with patch("tool.crawl_one_question") as mock_crawl:
+            out = second_pass(object(), "x", 1, [], [], "f.json", [], [], [], [], [],
+                              attempts=1, delay=0)
+        self.assertEqual(out, [])
+        mock_crawl.assert_not_called()
+
+    def test_zero_attempts_disables_pass(self):
+        from tool import second_pass
+        with patch("tool.crawl_one_question") as mock_crawl:
+            out = second_pass(object(), "x", 1, [3, 5], [], "f.json", [3, 5],
+                              [], [], [], [], attempts=0, delay=0)
+        self.assertEqual(out, [])
+        mock_crawl.assert_not_called()
 
 
 class TestSameQuestionHelper(unittest.TestCase):

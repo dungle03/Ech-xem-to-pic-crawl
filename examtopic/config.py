@@ -61,10 +61,17 @@ REQUEST_INTERVAL = float(_env_int("REQUEST_INTERVAL", 1))
 
 # So lan thu lai khi gap 429/503 (DANG BI CHAN) truoc khi ket luan that bai.
 # KHONG ap dung cho 404: do tren trang that, khi bi chan MOI request deu tra 429
-# (24 song song -> 24x429, khong 404 nao), con 404 la TAT DINH cho cap (id, slug)
-# sai hoac cau bi go/paywall -> retry chi dot 28s vo ich.
+# (burst 60 song song -> 60x429, khong 404 nao), nen 404 ket thuc ngay trong lan
+# goi do. Nhung 404 doi khi chi la chan tam (da gap: q32 hqt-4180, 29 cau ccdak
+# 404 roi sau do 200), nen co SECOND PASS CHAM cuoi phien de bat lai.
 THROTTLE_ATTEMPTS = _env_int("THROTTLE_ATTEMPTS", 3)
 THROTTLE_BACKOFF = float(_env_int("THROTTLE_BACKOFF", 4))
+
+# Second pass: sau khi crawl xong, thu lai cac cau that bai voi toc do CHAM va
+# so lan it hon. Muc dich: bat cac cau bi 404/429 tam thoi trong luc tai cao.
+# Dat 0 de tat (vd khi crawl lai lien tuc va khong muon ton them request).
+SECOND_PASS_ATTEMPTS = _env_int("SECOND_PASS_ATTEMPTS", 2)
+SECOND_PASS_DELAY = float(_env_int("SECOND_PASS_DELAY", 15))
 
 OUTPUT_DIR = _env_str("OUTPUT_DIR", "output")
 _IMG_CACHE_DIR = os.path.join(OUTPUT_DIR, ".imgcache")

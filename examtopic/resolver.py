@@ -91,16 +91,15 @@ _HARVESTED = set()
 
 # URL da xac nhan CHET: url -> thoi diem (monotonic) het hieu luc.
 #
-# 404 la TAT DINH, khong phai "dang bi chan": do tren trang that (9/2026), khi
-# Cloudflare chan thi MOI request deu tra 429 (24 request song song -> 24x429,
-# khong mot 404 nao), con 404 chi xay ra khi cap (id, slug) sai hoac cau da bi
-# go/paywall. Vi vay 404 ket thuc ngay (khong retry), va duoc ghi nho o day de
-# cac lan goi sau khong ton request nao.
-#
-# Co THOI HAN chu khong vinh vien: mot cau co the duoc cong khai lai, nen sau
-# cooldown phai cho phep thu lai thay vi khoa vinh vien.
+# Do tren trang that (~500 request, 9/2026): khi bi chan thi MOI request deu tra
+# 429 (burst 60 song song -> 60x429), KHONG mot 404 nao. Nhung da gap ca truong
+# hop 404 roi sau do 200 (q32 hqt-4180, 29 cau ccdak) -> 404 KHONG phai luc nao
+# cung la "link chet vinh vien". Vi vay:
+#   - 404 ket thuc NGAY trong mot lan goi (khong retry 28s, khong mo browser);
+#   - nhung chi ghi nho CO THOI HAN NGAN (60s) de lan chay lai / second pass som
+#     con thu lai duoc, tranh bo sot mot cau thuc ra van con.
 _DEAD_URLS = {}
-DEAD_URL_COOLDOWN = float(_env_float("DEAD_URL_COOLDOWN", 300))
+DEAD_URL_COOLDOWN = float(_env_float("DEAD_URL_COOLDOWN", 60))
 
 _DIRTY = False
 
@@ -187,9 +186,10 @@ def fetch_html_status(url, params=None, timeout=25):
         if resp.status_code == 200 and resp.text:
             return resp.text, 200
         # CHI 429/503 moi la "co the dang bi chan". Do tren trang that: khi bi
-        # chan, MOI request deu tra 429 (24 request song song -> 24x429, khong
-        # co 404 nao). Con 404 la TAT DINH cho cap (id, slug) sai -> retry chi
-        # dot 28s vo ich va lam nguoi dung tuong tool treo.
+        # chan, MOI request deu tra 429 (burst 60 song song -> 60x429, khong co
+        # 404 nao). 404 ket thuc NGAY trong lan goi nay (khong dot 28s retry,
+        # khong mo browser) -- nhung caller nen co mot "second pass cham" cuoi
+        # phien, vi 404 doi khi la chan tam (da gap: q32 hqt-4180, 29 cau ccdak).
         if resp.status_code in (429, 503) and attempt < THROTTLE_ATTEMPTS:
             wait = _retry_after_seconds(resp, THROTTLE_BACKOFF * (2 ** attempt))
             LOG.info(f"    HTTP {resp.status_code} - dang bi chan, "
@@ -201,9 +201,9 @@ def fetch_html_status(url, params=None, timeout=25):
         else:
             LOG.info(f"    HTTP {resp.status_code} cho {url}")
         break
-    # 404 = link chet THAT (cap id+slug sai, hoac cau bi go/paywall). Ghi nho CO
-    # THOI HAN de cac lan retry sau khong dam lai, nhung van cho thu lai sau khi
-    # cooldown het (404 cung co the do cau duoc cong khai lai).
+    # 404: nho CO THOI HAN NGAN (mac dinh 60s) de khong dam lai lien tuc trong
+    # cung phien, nhung van cho second pass / lan chay lai thu lai som -- 404
+    # doi khi chi la chan tam, khong phai cau bi go vinh vien.
     if last_status == 404:
         _DEAD_URLS[url] = time.monotonic() + DEAD_URL_COOLDOWN
     return None, last_status
@@ -238,6 +238,16 @@ def clear_index():
     _HARVESTED.clear()
     _DEAD_URLS.clear()
     _DIRTY = False
+
+
+def clear_dead_urls():
+    """Xoa bo nho URL chet de second pass thu lai duoc cac cau vua 404.
+
+    Vi sao can: `_DEAD_URLS` mac dinh giu 60s. Sau khi crawl xong, second pass
+    chay ngay nen neu khong xoa, no se bo qua dung nhung cau can thu lai nhat.
+    Day la ly do chinh khien "second pass" vo nghia neu quen buoc nay.
+    """
+    _DEAD_URLS.clear()
 
 
 def load_index():
