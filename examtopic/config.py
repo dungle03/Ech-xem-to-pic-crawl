@@ -208,6 +208,12 @@ SEARCH_ENGINES = {
             'a[href*="examtopics.com"]',
         ),
         "has_consent": False,
+        # DDG it CAPTCHA hon: go nhanh, chi thinh thoang dung ngan.
+        "key_delay_ms": (20, 55),
+        "pause_chance": 0.06,
+        "pause_delay": (0.08, 0.20),
+        "before_type_delay": (0.15, 0.35),
+        "before_submit_delay": (0.20, 0.45),
     },
     "google": {
         "home": "https://www.google.com/",
@@ -219,6 +225,12 @@ SEARCH_ENGINES = {
             'a[href*="examtopics.com"]',
         ),
         "has_consent": True,
+        # Google nhay voi automation hon: go va submit cham hon DDG.
+        "key_delay_ms": (180, 320),
+        "pause_chance": 0.18,
+        "pause_delay": (0.35, 0.85),
+        "before_type_delay": (0.8, 1.6),
+        "before_submit_delay": (1.2, 2.4),
     },
 }
 

@@ -5,7 +5,7 @@ Tự động thu thập câu hỏi từ ExamTopics, lưu kết quả dưới d�
 ## Tính năng
 
 * Tìm kiếm qua DuckDuckGo (ít CAPTCHA), tự chuyển sang Google khi DuckDuckGo không ra kết quả.
-* Mặc định mở trang chủ công cụ tìm kiếm và gõ query từng ký tự với độ trễ ngẫu nhiên như người dùng thật; không điều hướng thẳng tới URL chứa query.
+* Mặc định mở trang chủ công cụ tìm kiếm và gõ query từng ký tự với độ trễ ngẫu nhiên như người dùng thật; DuckDuckGo gõ nhanh, Google gõ và submit chậm hơn để giảm CAPTCHA.
 * Thu hẹp truy vấn bằng `site:examtopics.com` để tăng độ chính xác.
 * Tái sử dụng session/cookie xuyên suốt phiên crawl.
 * Fingerprint macOS nhất quán qua CloakBrowser.
@@ -121,7 +121,7 @@ Với mỗi câu hỏi, tool vận hành theo luồng tối ưu:
 
 1. **Kiểm tra bộ nhớ đệm (Link Cache)**: Nếu câu hỏi đã có link trong cache (từ file JSON cũ hoặc được thu thập từ các lần tìm kiếm trước), tool dùng ngay mà không cần tìm kiếm.
 2. **Giải tất định từ trang liệt kê của vendor**: Tool tìm category thật của mã đề qua `/search/?q=<mã đề>` (category BẮT BUỘC — `/exams/<mã>/<mã>/` trả 404), rồi quét `/discussions/<category>/<n>/` để lấy URL discussion thật. Nhờ đó phần lớn câu được giải **không cần search engine**. Kết quả lưu ở `output/.discussion_urls.json` nên các lần chạy sau không phải dò lại.
-3. **Tìm kiếm thông minh**: Câu không có trong danh sách trên mới cần search. Tool gõ query vào DuckDuckGo (kèm `site:examtopics.com`). Trong quá trình này, tool tự động gom tất cả các link câu hỏi khác xuất hiện trên trang tìm kiếm để dùng lại cho các câu sau. Nếu DuckDuckGo không ra link khớp, tự chuyển sang Google.
+3. **Tìm kiếm thông minh**: Câu không có trong danh sách trên mới cần search. Tool chỉ dùng một query có `site:examtopics.com`, gõ nhanh trên DuckDuckGo; nếu không có link khớp mới chuyển sang Google và gõ chậm hơn. Không còn lượt thử query bỏ `site:`/bọc mã đề trong ngoặc kép. Trong quá trình này, tool tự động gom các link câu hỏi khác xuất hiện trên trang tìm kiếm để dùng lại cho các câu sau.
 4. **Nạp nội dung siêu tốc (Fast HTTP-first)**: Dùng `httpx` nạp trực tiếp mã nguồn HTML đã bypass Cloudflare vào tab (~1s) thay vì chờ 15s tải quảng cáo/tracker. **Chỉ fallback sang điều hướng trình duyệt khi lỗi TẠM THỜI** (429/503/lỗi mạng): nếu HTTP trả **404** thì thoát ngay và báo "câu bị paywall/gỡ bỏ" — mở browser cho link 404 chỉ tạo `ERR_HTTP_RESPONSE_CODE_FAILURE` rồi treo ~15s.
 5. **Giãn nhịp & chống chặn**: Mọi request HTTP đi qua `resolver.fetch_html` để được giãn nhịp toàn cục. Đo trên trang thật: 8 worker song song → ~6 req/s, 0×429; 24 worker → 24×429 ngay lập tức. **Chỉ 429/503 mới thử lại** (tôn trọng header `Retry-After`); **404 là tất định** (cặp `id`+`slug` sai hoặc câu bị gỡ/paywall) nên kết thúc ngay, không đốt 28s backoff. Link 404 được ghi nhớ có thời hạn để không đâm lại.
 6. **Bóc lựa chọn & đáp án**: Trang discussion không còn markup `.multi-choice-item`, nên lựa chọn được tách từ text đề bài (chỉ tách khi thấy A, B, C… liên tiếp từ A). Với q1–q10, tool lấy thêm **đáp án chính thức** từ trang exam (`Correct Answer: AD`). Với câu không có A/B/C/D (HOTSPOT, DRAG DROP…), tool gắn `question_type` và hiển thị lý do thay vì để trống im lặng.

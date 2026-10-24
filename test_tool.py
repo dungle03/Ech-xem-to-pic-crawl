@@ -357,100 +357,115 @@ class TestHarvestedLinksCache(unittest.TestCase):
         mock_page.goto.assert_not_called()
 
 
-class TestFindDiscussionLinkQueryFallback(unittest.TestCase):
-    """Bug that: cau 108 ccaak ton tai that nhung tool bao "khong co discussion".
-
-    Nguyen nhan: dang query chinh luon kem `site:examtopics.com`. Search engine
-    khi do tu dong SUA ma de (ccaak -> ccsk) va tra ve cau cung so cua ma de
-    KHAC -> khong link nao khop -> bao thieu cau. Do tren ccaak: cau 108, 98,
-    85, 57, 86 deu ton tai, chi tim thay khi BO `site:` va boc ma de trong ngoac
-    kep. Test nay khoa HANH VI: dang query chinh that bai thi phai thu tiep dang
-    du phong, va chi nhan link khop dung ma de + cau.
-    """
+class TestFindDiscussionLinkSearch(unittest.TestCase):
+    """Search uses one site-restricted query per engine, DDG before Google."""
 
     TARGET = "https://www.examtopics.com/discussions/confluent/view/382176-exam-ccaak-topic-1-question-108-discussion/"
 
-    def _page_returning(self, hrefs_for_query, seen):
-        """Trang gia + patch search_engine: ghi lai query da thu, tra ve SERP gia.
-
-        `search_engine` duoc patch nen khong can browser; `extract_matching_link`
-        van chay THAT tren cac anchor do trang gia tra ve, nho vay test kiem tra
-        dung logic so khop ma de + cau.
-        """
+    def _page_returning(self, hrefs_for_search, seen, statuses=None):
         page = MagicMock()
         page.url = "https://duckduckgo.com/"
+        statuses = statuses or {}
 
         def fake_search(_page, query, engine="duckduckgo"):
             seen.append((engine, query))
-            return SEARCH_OK
+            return statuses.get(engine, SEARCH_OK)
 
         def query_selector_all(sel):
             anchors = []
-            for h in hrefs_for_query(seen[-1][1]):
-                a = MagicMock()
-                a.get_attribute.return_value = h
-                anchors.append(a)
+            engine, query = seen[-1]
+            for href in hrefs_for_search(engine, query):
+                anchor = MagicMock()
+                anchor.get_attribute.return_value = href
+                anchors.append(anchor)
             return anchors
 
         page.query_selector_all.side_effect = query_selector_all
         patcher = patch("examtopic.crawler.search_engine", side_effect=fake_search)
         patcher.start()
         self.addCleanup(patcher.stop)
-        # Tat bo giai tat dinh trong nhom test nay: chung kiem tra duong SEARCH.
-        # (Duong tat dinh co test rieng o TestDeterministicResolver.)
-        p2 = patch("examtopic.resolver.resolve", return_value=None)
-        p2.start()
-        self.addCleanup(p2.stop)
+        resolver_patcher = patch("examtopic.resolver.resolve", return_value=None)
+        resolver_patcher.start()
+        self.addCleanup(resolver_patcher.stop)
         return page
 
-    def test_falls_back_to_unquoted_query_when_site_query_yields_other_exam(self):
-        """Dang `site:` chi ra cau 108 cua ma de khac -> phai thu dang du phong."""
-        other_exam = "https://www.examtopics.com/discussions/isaca/view/92443-exam-ccak-topic-1-question-108-discussion/"
-
-        def hrefs(query):
-            if 'site:examtopics.com' in query:
-                return [other_exam]
-            return [other_exam, self.TARGET]
-
+    def test_uses_one_site_query_per_engine(self):
         seen = []
-        page = self._page_returning(hrefs, seen)
+        page = self._page_returning(lambda engine, query: [], seen)
         _HARVESTED_LINKS.clear()
         result = find_discussion_link(page, "ccaak", 1, 108)
+
+        self.assertIs(result, NO_DISCUSSION_MISSING)
+        self.assertEqual([engine for engine, _ in seen], ["duckduckgo", "google"])
+        self.assertEqual(len(seen), 2)
+        self.assertTrue(all("site:examtopics.com" in query for _, query in seen))
+        self.assertTrue(all('"ccaak"' not in query for _, query in seen))
+
+    def test_google_runs_only_after_duckduckgo_has_no_matching_link(self):
+        seen = []
+        page = self._page_returning(
+            lambda engine, query: [self.TARGET] if engine == "google" else [], seen)
+        _HARVESTED_LINKS.clear()
+        result = find_discussion_link(page, "ccaak", 1, 108)
+
         self.assertEqual(result, self.TARGET)
-        self.assertTrue(any('"ccaak"' in q for _, q in seen),
-                        "dang du phong phai boc ma de trong ngoac kep")
-        self.assertTrue(any('site:examtopics.com' in q for _, q in seen),
-                        "dang query chinh phai duoc thu truoc")
+        self.assertEqual([engine for engine, _ in seen], ["duckduckgo", "google"])
 
     def test_does_not_return_link_of_different_exam(self):
-        """Link cua ma de khac KHONG duoc coi la khop (ke ca khi cung so cau)."""
         other_exam = "https://www.examtopics.com/discussions/isaca/view/92443-exam-ccak-topic-1-question-108-discussion/"
         seen = []
-        page = self._page_returning(lambda q: [other_exam], seen)
+        page = self._page_returning(lambda engine, query: [other_exam], seen)
         _HARVESTED_LINKS.clear()
         result = find_discussion_link(page, "ccaak", 1, 108)
         self.assertIs(result, NO_DISCUSSION_MISSING)
 
-    def test_tries_second_query_form_for_every_engine(self):
-        """Moi dang query phai duoc thu o CA DuckDuckGo lan Google."""
-        seen = []
-        page = self._page_returning(lambda q: [], seen)
-        _HARVESTED_LINKS.clear()
-        find_discussion_link(page, "ccaak", 1, 108)
-        engines = {e for e, _ in seen}
-        self.assertEqual(engines, {"duckduckgo", "google"})
-        self.assertEqual(len(seen), 4, "2 dang query x 2 engine")
-
     def test_reports_blocked_only_when_both_engines_blocked(self):
-        page = MagicMock()
-        page.url = "https://duckduckgo.com/"
-        page.query_selector_all.return_value = []
-        page.keyboard.type.side_effect = None
-        page.query_selector.return_value = None
+        seen = []
+        page = self._page_returning(
+            lambda engine, query: [], seen,
+            statuses={"duckduckgo": SEARCH_BLOCKED, "google": SEARCH_BLOCKED},
+        )
         _HARVESTED_LINKS.clear()
-        with patch("examtopic.crawler.search_engine", return_value=SEARCH_BLOCKED):
-            result = find_discussion_link(page, "ccaak", 1, 108)
+        result = find_discussion_link(page, "ccaak", 1, 108)
         self.assertIs(result, NO_DISCUSSION_BLOCKED)
+        self.assertEqual([engine for engine, _ in seen], ["duckduckgo", "google"])
+
+
+class TestSearchTypingPace(unittest.TestCase):
+    def test_google_profile_is_slower_than_duckduckgo(self):
+        from examtopic.config import SEARCH_ENGINES
+        ddg = SEARCH_ENGINES["duckduckgo"]
+        google = SEARCH_ENGINES["google"]
+        self.assertGreater(google["key_delay_ms"][0], ddg["key_delay_ms"][1])
+        self.assertGreater(google["pause_chance"], ddg["pause_chance"])
+        self.assertGreater(google["before_submit_delay"][0], ddg["before_submit_delay"][1])
+
+    def test_typing_uses_engine_key_delay_profile(self):
+        from examtopic import crawler
+        cfg = {
+            "home": "https://search.test/",
+            "box_selectors": ("input",),
+            "result_selectors": ("article",),
+            "has_consent": False,
+            "key_delay_ms": (240, 420),
+            "pause_chance": 0.0,
+            "pause_delay": (0.0, 0.0),
+            "before_type_delay": (0.0, 0.0),
+            "before_submit_delay": (0.0, 0.0),
+        }
+        page = MagicMock()
+        page.query_selector.return_value = MagicMock()
+        with patch.object(crawler, "safe_goto", return_value=True), \
+             patch.object(crawler, "_search_is_blocked", return_value=False), \
+             patch.object(crawler, "_read_search_result", return_value=SEARCH_OK), \
+             patch.object(crawler.time, "sleep"), \
+             patch.object(crawler.random, "randint", return_value=300):
+            result = crawler._search_by_typing(page, cfg, "ab", "google")
+        self.assertEqual(result, SEARCH_OK)
+        self.assertEqual(
+            [call.kwargs["delay"] for call in page.keyboard.type.call_args_list],
+            [300, 300],
+        )
 
 
 class TestDeterministicResolver(unittest.TestCase):

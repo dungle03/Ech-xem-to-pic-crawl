@@ -176,11 +176,7 @@ def _search_via_url(page, cfg, query, engine):
     return _read_search_result(page, cfg, engine, wait_load=False)
 
 def _search_by_typing(page, cfg, query, engine):
-    """Duong du phong: ve trang chu roi go tung ky tu nhu nguoi that.
-
-    Cham hon nhung giong nguoi hon, nen giu lai cho truong hop URL truc tiep bi
-    chan/CAPTCHA.
-    """
+    """Ve trang chu va go tung ky tu theo nhịp rieng cua tung engine."""
     # Luon ve trang chu de co o tim kiem trong, sach.
     if not safe_goto(page, cfg["home"]):
         LOG.warning(f"  Khong tai duoc {engine}")
@@ -216,13 +212,15 @@ def _search_by_typing(page, cfg, query, engine):
         except Exception:
             page.keyboard.press("Control+a")
             page.keyboard.press("Delete")
-        time.sleep(random.uniform(0.1, 0.2))
-        # Go tung ky tu voi delay ngau nhien de giong nguoi.
+        time.sleep(random.uniform(*cfg.get("before_type_delay", (0.1, 0.2))))
+        key_delay = cfg.get("key_delay_ms", (25, 70))
+        pause_chance = cfg.get("pause_chance", 0.10)
+        pause_delay = cfg.get("pause_delay", (0.1, 0.25))
         for ch in query:
-            page.keyboard.type(ch, delay=random.randint(25, 70))
-            if random.random() < 0.10:
-                time.sleep(random.uniform(0.1, 0.25))
-        time.sleep(random.uniform(0.3, 0.7))
+            page.keyboard.type(ch, delay=random.randint(*key_delay))
+            if random.random() < pause_chance:
+                time.sleep(random.uniform(*pause_delay))
+        time.sleep(random.uniform(*cfg.get("before_submit_delay", (0.3, 0.7))))
         page.keyboard.press("Enter")
     except Exception as e:
         LOG.warning(f"  Loi go query: {e}")
@@ -267,8 +265,8 @@ def find_discussion_link(page, exam_code, topic, qnum):
     0. Bo giai tat dinh (`resolver.resolve`): dung question_id + AJAX cua chinh
        examtopics, KHONG dung search engine. Day la duong chinh vi no khong phu
        thuoc vao viec search engine co index dung trang hay khong.
-    1. DuckDuckGo voi 2 dang query (co/khong `site:`).
-    2. Google voi 2 dang query do.
+    1. DuckDuckGo voi mot query co `site:examtopics.com`.
+    2. Google voi cung query do, chi khi DDG khong co link khop.
 
     Vi sao van phai giu search: bo giai tat dinh can 1 "anchor" (question_id da
     biet) cho moi khoi cau. Khoi dau tien luon co san tu trang exam, con khoi sau
@@ -291,43 +289,33 @@ def find_discussion_link(page, exam_code, topic, qnum):
         LOG.info(f"  [Tat dinh] Giai duoc link khong can search: {resolved}")
         return resolved
 
-    queries = (
-        f"exam {exam_code} topic {topic} question {qnum} discussion site:examtopics.com",
-        f'exam "{exam_code}" topic {topic} question {qnum} discussion',
-    )
+    query = f"exam {exam_code} topic {topic} question {qnum} discussion site:examtopics.com"
     statuses = {"duckduckgo": SEARCH_ERROR, "google": SEARCH_ERROR}
-    # Thu het cac dang query tren DuckDuckGo TRUOC khi chuyen sang Google: DDG
-    # khoan dung voi query tu dong hon nhieu, con Google de ra CAPTCHA nen chi nen
-    # goi khi DDG da het cach.
-    for index, query in enumerate(queries):
-        status = search_engine(page, query, "duckduckgo")
-        statuses["duckduckgo"] = status
-        if status == SEARCH_OK:
-            href = extract_matching_link(page, exam_code, topic, qnum)
-            if href:
-                return href
-        if status == SEARCH_BLOCKED:
-            LOG.info("  DuckDuckGo bi chan/CAPTCHA.")
-        elif status == SEARCH_EMPTY:
-            LOG.info("  DuckDuckGo khong tra ve ket qua nao.")
-        else:
-            LOG.info("  DuckDuckGo khong co link dung cau.")
-        if index < len(queries) - 1:
-            LOG.info("  Thu lai bang dang query khac (bo 'site:', boc ma de trong ngoac kep)...")
+    status = search_engine(page, query, "duckduckgo")
+    statuses["duckduckgo"] = status
+    if status == SEARCH_OK:
+        href = extract_matching_link(page, exam_code, topic, qnum)
+        if href:
+            return href
+    if status == SEARCH_BLOCKED:
+        LOG.info("  DuckDuckGo bi chan/CAPTCHA.")
+    elif status == SEARCH_EMPTY:
+        LOG.info("  DuckDuckGo khong tra ve ket qua nao.")
+    else:
+        LOG.info("  DuckDuckGo khong co link dung cau.")
 
-    for query in queries:
-        status = search_engine(page, query, "google")
-        statuses["google"] = status
-        if status == SEARCH_OK:
-            href = extract_matching_link(page, exam_code, topic, qnum)
-            if href:
-                return href
-        if status == SEARCH_BLOCKED:
-            LOG.info("  Google bi chan/CAPTCHA.")
-        elif status == SEARCH_EMPTY:
-            LOG.info("  Google khong tra ve ket qua nao.")
-        else:
-            LOG.info("  Google khong co link dung cau.")
+    status = search_engine(page, query, "google")
+    statuses["google"] = status
+    if status == SEARCH_OK:
+        href = extract_matching_link(page, exam_code, topic, qnum)
+        if href:
+            return href
+    if status == SEARCH_BLOCKED:
+        LOG.info("  Google bi chan/CAPTCHA.")
+    elif status == SEARCH_EMPTY:
+        LOG.info("  Google khong tra ve ket qua nao.")
+    else:
+        LOG.info("  Google khong co link dung cau.")
     return no_link_result(statuses["duckduckgo"], statuses["google"])
 
 def close_extra_tabs(main_page):
