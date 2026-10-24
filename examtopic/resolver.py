@@ -65,6 +65,13 @@ _RE_LISTING_ITEM = re.compile(
     r'(?P<code>[a-z0-9\-_\.]+)-topic-(?P<topic>\d+)-question-(?P<qnum>\d+)-discussion',
     re.I,
 )
+_RE_DISCUSSION_URL = re.compile(
+    r'^(?P<prefix>https?://(?:www\.)?examtopics\.com/discussions/'
+    r'[a-z0-9\-]+/view/\d+-exam-)'
+    r'(?P<code>[a-z0-9\-_\.]+)'
+    r'(?P<suffix>-topic-\d+-question-\d+-discussion/?(?:[?#].*)?)$',
+    re.I,
+)
 _RE_PAGE_TOTAL = re.compile(
     r'Page\s*<strong>\d+</strong>\s*of\s*<strong>(\d+)</strong>', re.I)
 
@@ -338,6 +345,26 @@ def exam_slug_variants(exam_code):
         if cand and cand not in variants:
             variants.append(cand)
     return variants
+
+
+def discussion_url_variants(url, exam_code):
+    """Return constrained slug alternatives for one discussion URL.
+
+    Search indexes sometimes retain an old ExamTopics slug. For example,
+    H13-624_V5.5 q1 is indexed as ``h13-624_v55`` (404) while the same
+    discussion id is live as ``h13-624-v5-5`` (200). Only the exam slug is
+    replaced; category, discussion id, topic and question stay unchanged.
+    """
+    original = str(url or "")
+    match = _RE_DISCUSSION_URL.match(original)
+    if not match:
+        return [original] if original else []
+    out = [original]
+    for slug in exam_slug_variants(exam_code):
+        candidate = match.group("prefix") + slug + match.group("suffix")
+        if candidate not in out:
+            out.append(candidate)
+    return out
 
 
 def discover_category(exam_code):

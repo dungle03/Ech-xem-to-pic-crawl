@@ -518,6 +518,27 @@ class TestDeterministicResolver(unittest.TestCase):
         # Ma de co gach ngang: ban dau tien phai giu nguyen gach ngang.
         self.assertEqual(self.R.exam_slug_variants("hqt-4180")[0], "hqt-4180")
 
+    def test_discussion_url_variants_repair_stale_search_slug(self):
+        """Search can return an old underscore slug whose live URL is now 404.
+
+        H13-624_V5.5 q1 was observed as `_v55` in search results while the same
+        discussion id is live under `-v5-5`.  Keep id/category/topic/question
+        intact and generate the current exam slug as a retry candidate.
+        """
+        stale = ("https://www.examtopics.com/discussions/huawei/view/306412-"
+                 "exam-h13-624_v55-topic-1-question-1-discussion/")
+        repaired = ("https://www.examtopics.com/discussions/huawei/view/306412-"
+                    "exam-h13-624-v5-5-topic-1-question-1-discussion/")
+        variants = self.R.discussion_url_variants(stale, "h13-624-v5-5")
+        self.assertEqual(variants[0], stale)
+        self.assertIn(repaired, variants)
+
+    def test_discussion_url_variants_reject_non_discussion_url(self):
+        self.assertEqual(
+            self.R.discussion_url_variants("https://example.test/x", "h13-624-v5-5"),
+            ["https://example.test/x"],
+        )
+
     # -- category --------------------------------------------------------
     def test_discover_category_reads_search_results(self):
         """Category duoc doc tu link `/exams/<cat>/<slug>/` trong ket qua search."""
@@ -800,12 +821,11 @@ class TestProxyConfiguration(unittest.TestCase):
             self.assertFalse(load_discussion_via_http(tab, "https://x.test"))
 
 
-class TestSearchFastPath(unittest.TestCase):
-    """Search co 2 duong: URL truc tiep (nhanh) va go tay (du phong chong CAPTCHA).
+class TestSearchTyping(unittest.TestCase):
+    """The default browser search path types into the engine's search box.
 
-    Do tren trang that: go tay 12.9s/lan, URL truc tiep 1.8-3.7s va 22/22 lan
-    lien tiep khong bi chan. Nhung duong nhanh KHONG duoc phep lam mat kha nang
-    chong CAPTCHA cua ban cu -> phai tu dong rot ve go tay khi bi chan.
+    A direct URL helper remains covered separately, but runtime search must use
+    the human-like typing path as its default.
     """
 
     def _cfg(self):
@@ -828,41 +848,28 @@ class TestSearchFastPath(unittest.TestCase):
             self.assertTrue(parsed.netloc, f"{name} phai co host")
             self.assertIn("pl-300", url)
 
-    def test_fast_path_used_when_it_works(self):
-        """Duong nhanh chay duoc -> KHONG duoc go tay (tiet kiem ~10s/lan)."""
+    def test_search_defaults_to_typing_like_a_user(self):
+        """Default path must type the query, even when direct URL navigation works."""
         from examtopic import crawler
         page = MagicMock()
-        page.url = "https://duckduckgo.com/?q=x"
-        page.query_selector.return_value = None
         with patch.object(crawler, "_search_via_url", return_value=SEARCH_OK) as fast, \
-             patch.object(crawler, "_search_by_typing") as typing:
-            result = crawler.search_engine(page, "exam x topic 1 question 1", "duckduckgo")
-        self.assertEqual(result, SEARCH_OK)
-        fast.assert_called_once()
-        typing.assert_not_called()
-
-    def test_falls_back_to_typing_when_url_path_blocked(self):
-        """URL truc tiep bi chan -> PHAI rot ve go tay, khong duoc bo cuoc."""
-        from examtopic import crawler
-        page = MagicMock()
-        with patch.object(crawler, "_search_via_url", return_value=None), \
              patch.object(crawler, "_search_by_typing", return_value=SEARCH_OK) as typing:
             result = crawler.search_engine(page, "exam x topic 1 question 1", "duckduckgo")
         self.assertEqual(result, SEARCH_OK)
-        typing.assert_called_once()
+        typing.assert_called_once_with(
+            page, self._cfg()["duckduckgo"], "exam x topic 1 question 1", "duckduckgo")
+        fast.assert_not_called()
 
-    def test_blocked_result_is_not_treated_as_failure_of_fast_path(self):
-        """`SEARCH_BLOCKED` la ket qua THAT, khong phai 'duong nhanh hong'.
-
-        Neu coi no la None thi moi lan bi chan se ton them 13s go tay vo ich.
-        """
+    def test_default_typing_returns_blocked_status(self):
+        """The typed path's CAPTCHA/block status must be returned unchanged."""
         from examtopic import crawler
         page = MagicMock()
-        with patch.object(crawler, "_search_via_url", return_value=SEARCH_BLOCKED), \
-             patch.object(crawler, "_search_by_typing") as typing:
+        with patch.object(crawler, "_search_via_url") as fast, \
+             patch.object(crawler, "_search_by_typing", return_value=SEARCH_BLOCKED) as typing:
             result = crawler.search_engine(page, "q", "duckduckgo")
         self.assertEqual(result, SEARCH_BLOCKED)
-        typing.assert_not_called()
+        typing.assert_called_once()
+        fast.assert_not_called()
 
     def test_unknown_engine_still_errors(self):
         from examtopic import crawler
@@ -888,7 +895,6 @@ class TestSearchFastPath(unittest.TestCase):
         """Duong go tay thi van phai cho load (goto o day dung wait_until mac dinh)."""
         from examtopic import crawler
         page = MagicMock()
-        # Phai co o tim kiem that, neu khong ham thoat som truoc khi toi buoc cho load.
         page.query_selector.return_value = MagicMock()
         with patch.object(crawler, "safe_goto", return_value=True), \
              patch.object(crawler, "_search_is_blocked", return_value=False), \
@@ -1082,6 +1088,35 @@ class TestHttpRetryBackoff(unittest.TestCase):
             result = crawl_one_question(page, "a", 1, 1)
         self.assertIs(result, NO_DISCUSSION_GATED)
         mock_goto.assert_not_called()
+
+    def test_stale_slug_404_retries_current_slug_before_gated(self):
+        """A stale search slug must not turn a live discussion into a gated error."""
+        from examtopic.crawler import crawl_one_question
+        stale = ("https://www.examtopics.com/discussions/huawei/view/306412-"
+                 "exam-h13-624_v55-topic-1-question-1-discussion/")
+        repaired = ("https://www.examtopics.com/discussions/huawei/view/306412-"
+                    "exam-h13-624-v5-5-topic-1-question-1-discussion/")
+        page = MagicMock()
+        tab = MagicMock()
+        tab.url = "about:blank"
+        tab.evaluate.return_value = {
+            "question": "Which statement is false?",
+            "question_images": [],
+            "options": [],
+            "answers": [],
+        }
+        page.context.new_page.return_value = tab
+
+        def load(_tab, url):
+            return (True, 200) if url == repaired else (False, 404)
+
+        with patch("examtopic.crawler.find_discussion_link", return_value=stale), \
+             patch("examtopic.crawler.load_discussion_via_http_status", side_effect=load) as fetch:
+            result = crawl_one_question(page, "h13-624-v5-5", 1, 1)
+
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["url"], repaired)
+        self.assertEqual([c.args[1] for c in fetch.call_args_list], [stale, repaired])
 
     def test_load_discussion_429_does_fall_back_to_browser(self):
         """429 la loi TAM THOI -> van phai fallback browser (khong ket luan chet)."""

@@ -231,27 +231,18 @@ def _search_by_typing(page, cfg, query, engine):
     return _read_search_result(page, cfg, engine)
 
 def search_engine(page, query, engine="duckduckgo"):
-    """Tim query tren engine va tra ve trang thai search.
+    """Search by opening the engine home page and typing like a user by default.
 
-    Uu tien duong NHANH (dieu huong thang toi URL ket qua) vi nhanh hon ~6.5x;
-    neu duong do khong dung duoc (bi chan/khong tai duoc) thi tu dong rot ve
-    duong go tay tung ky tu nhu nguoi that. Nho vay tool vua nhanh vua giu duoc
-    kha nang chong CAPTCHA cua ban cu.
+    The query is entered character-by-character with small randomized delays;
+    direct search-URL navigation remains available only as an explicit helper,
+    not the default runtime path.
 
-    Tra ve `SEARCH_OK` khi co ket qua hien thi, `SEARCH_EMPTY` khi search binh
-    thuong nhung khong co ket qua, `SEARCH_BLOCKED` khi CAPTCHA/challenge, va
-    `SEARCH_ERROR` khi khong thao tac duoc trang.
+    Returns `SEARCH_OK`, `SEARCH_EMPTY`, `SEARCH_BLOCKED`, or `SEARCH_ERROR`.
     """
     cfg = SEARCH_ENGINES.get(engine)
     if not cfg:
         LOG.warning(f"  Engine khong ho tro: {engine}")
         return SEARCH_ERROR
-
-    fast = _search_via_url(page, cfg, query, engine)
-    if fast is not None:
-        return fast
-
-    LOG.info(f"  {engine}: duong URL truc tiep khong dung duoc, thu go tay...")
     return _search_by_typing(page, cfg, query, engine)
 
 def forget_harvested_link(exam_code, topic, qnum):
@@ -621,7 +612,18 @@ def crawl_one_question(page, exam_code, topic, qnum):
         loaded = False
         http_status = None
         if new_tab:
-            loaded, http_status = load_discussion_via_http_status(new_tab, href)
+            # Search engines may return a stale discussion slug even though the
+            # same category/id/topic/question is live under the current exam
+            # slug. Try only those constrained alternatives before classifying
+            # a 404 as gated/paywalled.
+            candidates = resolver.discussion_url_variants(href, exam_code)
+            for candidate in candidates:
+                if candidate != href:
+                    LOG.info(f"  Thu lai slug discussion: {candidate}")
+                loaded, http_status = load_discussion_via_http_status(new_tab, candidate)
+                if loaded or http_status != 404:
+                    href = candidate
+                    break
             if loaded:
                 LOG.info("  Da nap noi dung tuc thi qua HTTP (~1s)")
             elif http_status == 404:

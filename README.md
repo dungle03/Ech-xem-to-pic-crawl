@@ -5,9 +5,9 @@ Tự động thu thập câu hỏi từ ExamTopics, lưu kết quả dưới d�
 ## Tính năng
 
 * Tìm kiếm qua DuckDuckGo (ít CAPTCHA), tự chuyển sang Google khi DuckDuckGo không ra kết quả.
+* Mặc định mở trang chủ công cụ tìm kiếm và gõ query từng ký tự với độ trễ ngẫu nhiên như người dùng thật; không điều hướng thẳng tới URL chứa query.
 * Thu hẹp truy vấn bằng `site:examtopics.com` để tăng độ chính xác.
 * Tái sử dụng session/cookie xuyên suốt phiên crawl.
-* Gõ query vào ô tìm kiếm như người dùng thật (humanize).
 * Fingerprint macOS nhất quán qua CloakBrowser.
 * Lọc link chính xác theo slug — bỏ qua trang tổng hợp, câu/mã đề khác và link wrapper.
 * Thu thập đầy đủ: đề bài, hình ảnh, các lựa chọn (A/B/C/D...), đáp án gợi ý và đáp án bình chọn của cộng đồng (Community Most Voted & Vote breakdown).
