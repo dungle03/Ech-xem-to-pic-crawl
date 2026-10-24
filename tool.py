@@ -232,6 +232,7 @@ def parse_args():
     parser.add_argument("--convert-only", help="Duong dan file JSON can convert truc tiep sang HTML va DOCX")
     parser.add_argument("--hide-answers", action="store_true", help="An dap an trong file DOCX (che do tu luyen, dap an chi con o bang Answer Key)")
     parser.add_argument("--headless", action="store_true", help="Chay browser an (khong hien cua so). Dung tren server/CI khong co man hinh; mac dinh la hien de giam CAPTCHA khi search.")
+    parser.add_argument("--wait-on-captcha", action="store_true", help="Khi search gap CAPTCHA, dem 30 giay roi tu kiem tra lai; lap lai den khi CAPTCHA duoc xu ly.")
     # Nhom dieu khien muc do log. Mac dinh (khong flag) giu nguyen output nhu cu.
     log_group = parser.add_mutually_exclusive_group()
     log_group.add_argument("-q", "--quiet", action="store_true", help="Chi in canh bao va loi (tat tien do). Hop voi CI hoac khi ghi log ra file.")
@@ -242,6 +243,13 @@ def parse_args():
 def main():
     args = parse_args()
     configure_logging(quiet=args.quiet, verbose=args.verbose)
+
+    if args.wait_on_captcha and args.headless:
+        LOG.error("--wait-on-captcha can only be used with a visible browser; remove --headless.")
+        sys.exit(2)
+    if args.wait_on_captcha:
+        from examtopic import config as app_config
+        app_config.WAIT_ON_CAPTCHA = True
 
     if args.convert_only:
         json_path = args.convert_only

@@ -94,6 +94,15 @@ python3 tool.py --convert-only output/sk0005_questions.json
 # Chạy ẩn cửa sổ trình duyệt (dùng trên server/CI không có màn hình)
 python3 tool.py -e az-104 -t 1 -r 1-50 --headless -y
 
+# Khi CAPTCHA xuất hiện, đếm 30 giây rồi tự kiểm tra lại mỗi 30 giây
+python3 tool.py -e az-104 -t 1 -r 1-50 --wait-on-captcha -y
+
+# Hoặc bật bằng biến môi trường
+WAIT_ON_CAPTCHA=1 python3 tool.py -e az-104 -t 1 -r 1-50 -y
+
+`--wait-on-captcha` cần browser hiển thị và terminal tương tác; không kết hợp với `--headless`.
+Bạn có thể xử lý CAPTCHA trên cửa sổ browser trong lúc đếm; crawler tiếp tục khi phát hiện CAPTCHA đã hết.
+
 # Ẩn đáp án trong file DOCX để tự luyện (đáp án chỉ còn ở bảng Answer Key)
 python3 tool.py --convert-only output/sk0005_questions.json --hide-answers
 

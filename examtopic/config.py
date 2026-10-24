@@ -77,6 +77,9 @@ OUTPUT_DIR = _env_str("OUTPUT_DIR", "output")
 _IMG_CACHE_DIR = os.path.join(OUTPUT_DIR, ".imgcache")
 
 DEFAULT_OP_TIMEOUT = _env_int("DEFAULT_OP_TIMEOUT", 30000)
+WAIT_ON_CAPTCHA = os.environ.get("WAIT_ON_CAPTCHA", "").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 NO_DISCUSSION_BLOCKED = object()
 NO_DISCUSSION_MISSING = object()

@@ -886,6 +886,115 @@ class TestSearchTyping(unittest.TestCase):
         typing.assert_called_once()
         fast.assert_not_called()
 
+
+    def test_wait_for_manual_captcha_requires_interactive_terminal(self):
+        from examtopic import crawler, config
+        old_value = config.WAIT_ON_CAPTCHA
+        config.WAIT_ON_CAPTCHA = True
+        self.addCleanup(setattr, config, "WAIT_ON_CAPTCHA", old_value)
+        with patch.object(crawler.sys, "stdin", MagicMock(isatty=lambda: False)), patch("builtins.input") as input_fn:
+            self.assertFalse(crawler._wait_for_manual_captcha(MagicMock(), "google"))
+        input_fn.assert_not_called()
+
+    def test_wait_for_manual_captcha_is_disabled_by_default(self):
+        from examtopic import crawler, config
+        old_value = config.WAIT_ON_CAPTCHA
+        config.WAIT_ON_CAPTCHA = False
+        self.addCleanup(setattr, config, "WAIT_ON_CAPTCHA", old_value)
+        with patch.object(crawler.sys, "stdin", MagicMock(isatty=lambda: True)), patch("builtins.input") as input_fn:
+            self.assertFalse(crawler._wait_for_manual_captcha(MagicMock(), "google"))
+        input_fn.assert_not_called()
+
+    def test_captcha_waits_30_seconds_then_rechecks_until_clear(self):
+        from examtopic import crawler, config
+        old_value = config.WAIT_ON_CAPTCHA
+        config.WAIT_ON_CAPTCHA = True
+        self.addCleanup(setattr, config, "WAIT_ON_CAPTCHA", old_value)
+        blocked = [True, True, True, False]
+        with patch.object(crawler.sys, "stdin", MagicMock(isatty=lambda: True)), patch.object(crawler.time, "sleep") as sleep, patch.object(crawler, "_search_is_blocked", side_effect=blocked):
+            self.assertTrue(crawler._wait_for_manual_captcha(MagicMock(), "google"))
+        self.assertEqual(sleep.call_count, 60)
+        self.assertTrue(all(call.args == (1,) for call in sleep.call_args_list))
+
+    def test_captcha_wait_can_be_disabled(self):
+        from examtopic import crawler, config
+        old_value = config.WAIT_ON_CAPTCHA
+        config.WAIT_ON_CAPTCHA = False
+        self.addCleanup(setattr, config, "WAIT_ON_CAPTCHA", old_value)
+        with patch.object(crawler.time, "sleep") as sleep:
+            self.assertFalse(crawler._wait_for_manual_captcha(MagicMock(), "google"))
+        sleep.assert_not_called()
+
+    def test_captcha_wait_requires_interactive_terminal(self):
+        from examtopic import crawler, config
+        old_value = config.WAIT_ON_CAPTCHA
+        config.WAIT_ON_CAPTCHA = True
+        self.addCleanup(setattr, config, "WAIT_ON_CAPTCHA", old_value)
+        with patch.object(crawler.sys, "stdin", MagicMock(isatty=lambda: False)), patch.object(crawler.time, "sleep") as sleep:
+            self.assertFalse(crawler._wait_for_manual_captcha(MagicMock(), "google"))
+        sleep.assert_not_called()
+
+
+    def test_search_waits_for_manual_captcha_after_submission(self):
+        from examtopic import crawler, config
+        old_value = config.WAIT_ON_CAPTCHA
+        config.WAIT_ON_CAPTCHA = True
+        self.addCleanup(setattr, config, "WAIT_ON_CAPTCHA", old_value)
+        page = MagicMock()
+        page.wait_for_selector.side_effect = [Exception("captcha page has no results"), None]
+        with patch.object(crawler.sys, "stdin", MagicMock(isatty=lambda: True)), patch.object(crawler, "_search_is_blocked", side_effect=[True, True, True, False, False]), patch.object(crawler.time, "sleep") as sleep:
+            result = crawler._read_search_result(page, self._cfg()["google"], "google")
+        self.assertEqual(result, SEARCH_OK)
+        self.assertEqual(sum(call.args == (1,) for call in sleep.call_args_list), 30)
+
+    def test_parse_args_supports_wait_on_captcha(self):
+        from unittest.mock import patch as mock_patch
+        from tool import parse_args
+        with mock_patch("sys.argv", ["tool.py", "--wait-on-captcha"]):
+            self.assertTrue(parse_args().wait_on_captcha)
+        with mock_patch("sys.argv", ["tool.py"]):
+            self.assertFalse(parse_args().wait_on_captcha)
+
+    def test_cli_help_exposes_wait_on_captcha(self):
+        import subprocess
+        import sys as _sys
+        proc = subprocess.run(
+            [_sys.executable, "tool.py", "--help"], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("--wait-on-captcha", proc.stdout)
+
+    def test_wait_on_captcha_flag_rejects_headless(self):
+        import subprocess
+        import sys as _sys
+        proc = subprocess.run(
+            [_sys.executable, "tool.py", "--wait-on-captcha", "--headless", "-e", "x", "-r", "1"],
+            capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("visible browser", proc.stdout)
+
+    def test_typing_uses_engine_key_delay_profile(self):
+        from examtopic import crawler
+        cfg = {
+            "home": "https://search.test/",
+            "box_selectors": ("input",),
+            "result_selectors": ("article",),
+            "has_consent": False,
+            "key_delay_ms": (240, 420),
+            "pause_chance": 0.0,
+            "pause_delay": (0.0, 0.0),
+            "before_type_delay": (0.0, 0.0),
+            "before_submit_delay": (0.0, 0.0),
+        }
+        page = MagicMock()
+        page.query_selector.return_value = MagicMock()
+        with patch.object(crawler, "safe_goto", return_value=True), patch.object(crawler, "_search_is_blocked", return_value=False), patch.object(crawler, "_read_search_result", return_value=SEARCH_OK), patch.object(crawler.time, "sleep"), patch.object(crawler.random, "randint", return_value=300):
+            result = crawler._search_by_typing(page, cfg, "ab", "google")
+        self.assertEqual(result, SEARCH_OK)
+        self.assertEqual(
+            [call.kwargs["delay"] for call in page.keyboard.type.call_args_list],
+            [300, 300],
+        )
+
     def test_unknown_engine_still_errors(self):
         from examtopic import crawler
         self.assertEqual(crawler.search_engine(MagicMock(), "q", "khong-ton-tai"), SEARCH_ERROR)

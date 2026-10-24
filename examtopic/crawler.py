@@ -1,9 +1,11 @@
 import re
+import sys
 import time
 import random
 from urllib.parse import urljoin, quote_plus
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+from . import config as app_config
 from . import resolver
 from .config import (
     LOG,
@@ -121,6 +123,30 @@ def _search_is_blocked(page):
     except Exception:
         return False
 
+
+def _wait_for_manual_captcha(page, engine):
+    """When enabled, count down 30 seconds and poll until the challenge clears."""
+    if not app_config.WAIT_ON_CAPTCHA:
+        return False
+    try:
+        if not sys.stdin.isatty():
+            LOG.warning("  CAPTCHA polling requires an interactive terminal.")
+            return False
+        if not _search_is_blocked(page):
+            return True
+        LOG.warning(
+            f"  CAPTCHA/challenge tren {engine}; se kiem tra lai moi 30 giay. "
+            "Neu browser dang hien, ban co the xu ly CAPTCHA trong luc cho."
+        )
+        while _search_is_blocked(page):
+            for remaining in range(30, 0, -1):
+                if remaining % 5 == 0 or remaining == 1:
+                    LOG.info(f"  CAPTCHA: kiem tra lai sau {remaining}s...")
+                time.sleep(1)
+        return True
+    except KeyboardInterrupt:
+        return False
+
 def _read_search_result(page, cfg, engine, wait_load=True):
     """Cho ket qua hien va doc trang thai search. Dung chung cho ca 2 duong.
 
@@ -145,6 +171,8 @@ def _read_search_result(page, cfg, engine, wait_load=True):
         pass
     time.sleep(random.uniform(0.4, 0.8))
     if _search_is_blocked(page):
+        if _wait_for_manual_captcha(page, engine):
+            return _read_search_result(page, cfg, engine, wait_load=False)
         LOG.warning(f"  {engine} bi chan/CAPTCHA sau khi search")
         return SEARCH_BLOCKED
     return SEARCH_OK if got_results else SEARCH_EMPTY
@@ -181,7 +209,7 @@ def _search_by_typing(page, cfg, query, engine):
     if not safe_goto(page, cfg["home"]):
         LOG.warning(f"  Khong tai duoc {engine}")
         return SEARCH_BLOCKED
-    if _search_is_blocked(page):
+    if _search_is_blocked(page) and not _wait_for_manual_captcha(page, engine):
         LOG.warning(f"  {engine} dang hien CAPTCHA/challenge")
         return SEARCH_BLOCKED
     time.sleep(random.uniform(0.5, 1.0))
