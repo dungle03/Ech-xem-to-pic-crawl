@@ -49,7 +49,7 @@ from .config import (
     _IMG_HEADERS,
     _SESSION_COOKIES,
 )
-from .parser import canonical_exam_code, normalize_exam_code
+from .parser import canonical_exam_code, extract_discussion_info, normalize_exam_code
 
 BASE = "https://www.examtopics.com"
 SEARCH_URL = BASE + "/search/"
@@ -367,18 +367,42 @@ def discussion_url_variants(url, exam_code):
     return out
 
 
-def discover_category(exam_code):
-    """Tim category that (vendor) cua ma de qua trang search. None neu khong thay.
+def remember_category_from_discussion_url(exam_code, discussion_url):
+    """Learn a vendor category from a known real discussion URL."""
+    code = canonical_exam_code(exam_code)
+    info = extract_discussion_info(discussion_url)
+    if not code or not info or info[0] != code:
+        return None
+    match = re.search(
+        r"https?://(?:www\.)?examtopics\.com/discussions/([a-z0-9-]+)/view/",
+        str(discussion_url), re.I)
+    if not match:
+        return None
+    category = match.group(1).lower()
+    if CATEGORY.get(code) != category:
+        CATEGORY[code] = category
+        _mark_dirty()
+    return category
 
-    Category BAT BUOC de dung URL trang exam: `/exams/hqt-4180/hqt-4180/` -> 404,
-    con `/exams/hitachi/hqt-4180/` -> 200.
-    """
+
+def discover_category(exam_code):
+    """Find the exam vendor/category, preferring cached/live-link evidence."""
     code = canonical_exam_code(exam_code)
     if not code:
         return None
     load_index()
     if code in CATEGORY:
         return CATEGORY[code]
+
+    # Search results may be empty while the discussion listing/cache already
+    # contains a canonical URL with its vendor category.
+    for bucket in (INDEX.get(code, {}),):
+        for url in bucket.values():
+            category = remember_category_from_discussion_url(exam_code, url)
+            if category:
+                LOG.info(f"  [Danh muc] {exam_code} -> {category} (discussion URL)")
+                return category
+
     for slug in exam_slug_variants(exam_code):
         html = fetch_html(SEARCH_URL, params={"q": slug})
         if not html:
@@ -393,10 +417,20 @@ def discover_category(exam_code):
     return None
 
 
+def answer_key_from_discussion(exam_code, discussion_url):
+    """Load/cache official answers using the category embedded in a discussion URL."""
+    category = remember_category_from_discussion_url(exam_code, discussion_url)
+    if not category:
+        return {}
+    return exam_answer_key(exam_code)
+
+
+
+
 # ---------------------------------------------------------------------------
 # Thu thap URL discussion tu trang liet ke cua vendor
 # ---------------------------------------------------------------------------
-def harvest_listing(category, max_pages=30):
+def harvest_listing(category, max_pages=60):
     """Quet `/discussions/<category>/<n>/`, ghi moi URL discussion that vao INDEX.
 
     Tra ve so URL MOI them duoc. Day la duong thay the cho AJAX da chet.
@@ -408,12 +442,18 @@ def harvest_listing(category, max_pages=30):
         return 0
     added = 0
     total_pages = None
+    completed = False
+    page = 0
+    html = None
+    items = []
     for page in range(1, max_pages + 1):
         html = fetch_html(LISTING_URL.format(category=category, page=page))
         if not html:
+            completed = False
             break
         items = _RE_LISTING_ITEM.findall(html)
         if not items:
+            completed = True
             break
         for cat, did, code, topic, qnum in items:
             key = (int(topic), int(qnum))
@@ -428,8 +468,13 @@ def harvest_listing(category, max_pages=30):
             if info:
                 total_pages = int(info.group(1))
         if total_pages is not None and page >= total_pages:
+            completed = True
             break
-    _HARVESTED.add(category)
+        completed = False
+    if total_pages is None and html and items and page == max_pages:
+        completed = True
+    if completed:
+        _HARVESTED.add(category)
     if added:
         _mark_dirty()
         LOG.info(f"  [Thu thap] {category}: them {added} URL discussion.")
@@ -466,23 +511,27 @@ def exam_answer_key(exam_code):
     if not code:
         return {}
     load_index()
-    if ANSWER_KEY.get(code):
-        return ANSWER_KEY[code]
+    existing = dict(ANSWER_KEY.get(code) or {})
+    if all(qnum in existing for qnum in range(1, 11)):
+        return existing
     category = discover_category(exam_code)
     if not category:
-        return {}
+        return existing
+    merged = dict(existing)
     for slug in exam_slug_variants(exam_code):
         html = fetch_html(EXAM_VIEW_URL.format(category=category, slug=slug))
         if not html:
             continue
-        key = _parse_answer_key(html)
-        if key:
-            ANSWER_KEY[code] = key
-            _mark_dirty()
-            save_index()
-            LOG.info(f"  [Answer key] Lay duoc dap an chinh thuc cho {len(key)} cau dau.")
-            return key
-    return {}
+        parsed = _parse_answer_key(html)
+        if parsed:
+            merged.update(parsed)
+            if merged != ANSWER_KEY.get(code):
+                ANSWER_KEY[code] = merged
+                _mark_dirty()
+                save_index()
+            LOG.info(f"  [Answer key] Lay duoc dap an chinh thuc cho {len(merged)} cau dau.")
+            return merged
+    return existing
 
 
 def _parse_answer_key(html):

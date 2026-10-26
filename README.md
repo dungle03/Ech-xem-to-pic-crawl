@@ -28,7 +28,7 @@ Tự động thu thập câu hỏi từ ExamTopics, lưu kết quả dưới d�
 
 ## Yêu cầu
 
-* Python 3.9+
+* Python 3.10+ (Camoufox dependency requires Python 3.10 or newer)
 * Kết nối Internet
 * Linux/macOS hoặc Windows (WSL2 khuyến nghị)
 * Màn hình hiển thị (khuyến nghị): mặc định tool chạy trình duyệt ở chế độ headed để giảm CAPTCHA. Trên server/CI không có màn hình, dùng thêm `--headless`.
@@ -52,7 +52,18 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Lần chạy đầu, CloakBrowser tự tải Chromium (~697MB) về `~/.cloakbrowser/`. Cần mạng thông và đủ dung lượng đĩa.
+Nhánh thử nghiệm hỗ trợ hai backend:
+
+```bash
+# Camoufox là mặc định trên nhánh này; tải Firefox build tương ứng trước
+camoufox fetch
+python3 tool.py --browser camoufox -e az-104 -r 1-10 --headless
+
+# Quay lại backend cũ để đối chiếu hoặc rollback tức thì
+python3 tool.py --browser cloakbrowser -e az-104 -r 1-10 --headless
+```
+
+Lần chạy đầu, Camoufox tải browser build khoảng 1.3GB vào `~/.cache/camoufox/`; CloakBrowser tự tải Chromium vào `~/.cloakbrowser/`. Cần mạng ổn định và đủ dung lượng đĩa. Với Camoufox, GeoIP mặc định tắt để tránh truy vấn IP/dữ liệu GeoIP lúc khởi động; bật riêng bằng `CAMOUFOX_GEOIP=true` nếu cần đồng bộ fingerprint vị trí với proxy.
 
 ## Sử dụng
 

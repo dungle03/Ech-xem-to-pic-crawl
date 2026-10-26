@@ -28,6 +28,7 @@ from .config import (
     _RE_NOISE_COMMENT,
 )
 from .parser import (
+    as_int,
     canonical_exam_code,
     extract_matching_link,
     no_link_result,
@@ -317,7 +318,7 @@ def find_discussion_link(page, exam_code, topic, qnum):
         LOG.info(f"  [Tat dinh] Giai duoc link khong can search: {resolved}")
         return resolved
 
-    query = f"exam {exam_code} topic {topic} question {qnum} discussion site:examtopics.com"
+    query = f'"{exam_code}" topic {topic} question {qnum} discussion'
     statuses = {"duckduckgo": SEARCH_ERROR, "google": SEARCH_ERROR}
     status = search_engine(page, query, "duckduckgo")
     statuses["duckduckgo"] = status
@@ -615,6 +616,16 @@ def crawl_one_question(page, exam_code, topic, qnum):
             LOG.info(f"  Bo qua cau {qnum}: ca DuckDuckGo va Google da search nhung khong co link dung cau, khong retry.")
             return NO_DISCUSSION_MISSING
         LOG.info(f"  Tim thay: {href}")
+        # The discussion URL contains the vendor category even when ExamTopics'
+        # search endpoint returns an empty result page. Learn it and load the
+        # official answer key (public questions 1-10) before building the record.
+        resolver.remember_category_from_discussion_url(exam_code, href)
+        answer_key = resolver.ANSWER_KEY.get(canonical_exam_code(exam_code), {})
+        if qnum <= 10 and qnum not in answer_key:
+            loaded_key = resolver.answer_key_from_discussion(exam_code, href)
+            if loaded_key:
+                resolver.ANSWER_KEY.setdefault(
+                    canonical_exam_code(exam_code), loaded_key)
 
         # 3. Mo tab va nap noi dung. Uu tien nap tuc thi qua HTTP (1s thay vi cho 15s quang cao),
         #    chi fallback sang dieu huong browser khi loi la TAM THOI (429/503/loi mang).
@@ -808,7 +819,8 @@ def crawl_one_question(page, exam_code, topic, qnum):
                     try {
                         const blocks = document.querySelectorAll('.media.comment-container');
                         for (const box of blocks) {
-                            const badgeEl = box.querySelector('.badge');
+                            const badgeEl = Array.from(box.querySelectorAll('.badge'))
+                                .find(el => /^Selected Answer:/i.test(el.innerText.trim()));
                             const answerEl = badgeEl ? badgeEl.querySelector('strong') : null;
                             const answerText = answerEl ? answerEl.innerText.trim() : '';
                             if (!answerText) continue;
@@ -906,7 +918,10 @@ def crawl_one_question(page, exam_code, topic, qnum):
         # nhat; uu tien hon `suggested_answers` (von dua vao marker lua chon dung
         # tren trang discussion -- nay khong con, xem comment trong evaluate).
         # Danh dau luon lua chon dung de exporter hien dung.
-        official = (resolver.ANSWER_KEY.get(canonical_exam_code(exam_code)) or {}).get(qnum)
+        official = (
+            (resolver.ANSWER_KEY.get(canonical_exam_code(exam_code)) or {}).get(qnum)
+            if as_int(topic, 1) == 1 else None
+        )
         if official:
             letters = [c for c in official.upper() if c.isalpha()]
             suggested_answers = letters

@@ -2,7 +2,7 @@ import os
 import sys
 import random
 import time
-from cloakbrowser import launch
+from browser_backend import launch_browser
 
 from examtopic import (
     LOG,
@@ -221,6 +221,36 @@ def second_pass(page, search_code, topic, retry_qs, all_data, filename,
     return recovered
 
 
+def enrich_saved_answer_keys(records, exam_code):
+    """Refresh public official keys and apply them to matching saved records."""
+    resolver.load_index()
+    for rec in records:
+        if isinstance(rec, dict) and rec.get("url"):
+            resolver.remember_category_from_discussion_url(exam_code, rec["url"])
+    official_answers = resolver.exam_answer_key(exam_code)
+    changed = False
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        qnum = as_int(rec.get("question_num"), 0)
+        if as_int(rec.get("topic"), 1) != 1 or qnum not in official_answers:
+            continue
+        letters = [c for c in official_answers[qnum].upper() if c.isalpha()]
+        was_correct = rec.get("suggested_answers") or []
+        options = rec.get("options") or []
+        was_flagged = [
+            option.get("letter") for option in options
+            if isinstance(option, dict) and option.get("is_correct")
+        ]
+        rec["suggested_answers"] = letters
+        for option in options:
+            if isinstance(option, dict):
+                option["is_correct"] = option.get("letter") in letters
+        changed = changed or was_correct != letters or was_flagged != letters
+
+    return changed
+
+
 def parse_args():
     import argparse
     parser = argparse.ArgumentParser(description="ExamTopics Crawler & Converter")
@@ -232,6 +262,7 @@ def parse_args():
     parser.add_argument("--convert-only", help="Duong dan file JSON can convert truc tiep sang HTML va DOCX")
     parser.add_argument("--hide-answers", action="store_true", help="An dap an trong file DOCX (che do tu luyen, dap an chi con o bang Answer Key)")
     parser.add_argument("--headless", action="store_true", help="Chay browser an (khong hien cua so). Dung tren server/CI khong co man hinh; mac dinh la hien de giam CAPTCHA khi search.")
+    parser.add_argument("--browser", choices=("camoufox", "cloakbrowser"), default="camoufox", help="Browser backend (mac dinh tren nhanh thu nghiem: camoufox).")
     parser.add_argument("--wait-on-captcha", action="store_true", help="Khi search gap CAPTCHA, dem 30 giay roi tu kiem tra lai; lap lai den khi CAPTCHA duoc xu ly.")
     # Nhom dieu khien muc do log. Mac dinh (khong flag) giu nguyen output nhu cu.
     log_group = parser.add_mutually_exclusive_group()
@@ -319,6 +350,14 @@ def main():
         LOG.info(f"  Nap san {len(error_records)} ban ghi loi tu output/{error_filename}.")
 
     all_data = load_all(filepath)
+    # Refresh public official answers before resuming and enrich saved records.
+    try:
+        if enrich_saved_answer_keys(all_data, search_code):
+            save_progress(all_data, filename)
+            LOG.info("  Da bo sung dap an chinh thuc vao cac ban ghi cu.")
+    except Exception as e:
+        LOG.warning(f"  Khong lam moi duoc answer key: {e}")
+
     for rec in all_data:
         if isinstance(rec, dict) and rec.get("url"):
             info = extract_discussion_info(rec.get("url"))
@@ -334,19 +373,13 @@ def main():
     LOG.info(f"\nCrawl {search_code.upper()}, topic {topic}, cau {start_q}-{end_q}")
     LOG.info("-"*60)
 
-    LOG.info("Khoi dong CloakBrowser...")
+    LOG.info(f"Khoi dong browser backend: {args.browser}...")
     fp_seed = random.randint(10000, 99999)
-    browser = launch(
+    browser = launch_browser(
+        args.browser,
         headless=args.headless,
-        humanize=True,
-        stealth_args=False,
         proxy=args.proxy.strip() if args.proxy else None,
-        args=[
-            '--no-sandbox',
-            f'--fingerprint={fp_seed}',
-            '--fingerprint-platform=macos',
-            '--disable-dev-shm-usage',
-        ],
+        fingerprint_seed=fp_seed,
     )
 
     added = 0

@@ -184,6 +184,69 @@ class TestLoadAllDataSafety(unittest.TestCase):
             self.assertEqual(json.load(f), data)
 
 
+class TestSavedAnswerKeyEnrichment(unittest.TestCase):
+    def test_does_not_report_unchanged_answer_rows_as_modified(self):
+        from tool import enrich_saved_answer_keys
+        records = [{
+            "question_num": 1,
+            "suggested_answers": ["D"],
+            "options": [
+                {"letter": "A", "is_correct": False},
+                {"letter": "D", "is_correct": True},
+            ],
+        }]
+        with (
+            patch("tool.resolver.load_index"),
+            patch("tool.resolver.remember_category_from_discussion_url"),
+            patch("tool.resolver.exam_answer_key", return_value={1: "D"}),
+        ):
+            self.assertFalse(enrich_saved_answer_keys(records, "h13-624-v5-5"))
+
+    def test_enriches_existing_public_answers_and_keeps_later_records_unchanged(self):
+        from tool import enrich_saved_answer_keys
+        records = [
+            {
+                "exam_code": "h13-624-v5-5",
+                "topic": 1,
+                "question_num": 1,
+                "url": "https://www.examtopics.com/discussions/huawei/view/306412-exam-h13-624-v5-5-topic-1-question-1-discussion/",
+                "suggested_answers": [],
+                "options": [
+                    {"letter": "A", "is_correct": False},
+                    {"letter": "D", "is_correct": False},
+                ],
+            },
+            {
+                "exam_code": "h13-624-v5-5",
+                "topic": 1,
+                "question_num": 11,
+                "suggested_answers": [],
+                "options": [{"letter": "A", "is_correct": False}],
+            },
+            {
+                "exam_code": "h13-624-v5-5",
+                "topic": 2,
+                "question_num": 1,
+                "suggested_answers": [],
+                "options": [{"letter": "A", "is_correct": False}],
+            },
+        ]
+        with (
+            patch("tool.resolver.load_index"),
+            patch("tool.resolver.remember_category_from_discussion_url", return_value="huawei"),
+            patch("tool.resolver.exam_answer_key", return_value={1: "D"}),
+        ):
+            changed = enrich_saved_answer_keys(records, "h13-624-v5-5")
+        self.assertTrue(changed)
+        self.assertEqual(records[0]["suggested_answers"], ["D"])
+        self.assertFalse(records[0]["options"][0]["is_correct"])
+        self.assertTrue(records[0]["options"][1]["is_correct"])
+        self.assertEqual(records[1]["suggested_answers"], [])
+        self.assertFalse(records[1]["options"][0]["is_correct"])
+        self.assertEqual(records[2]["suggested_answers"], [])
+        self.assertFalse(records[2]["options"][0]["is_correct"])
+
+
 class TestUpsertAndOrder(unittest.TestCase):
     def test_upsert_maintains_sorted_order(self):
         data = []
@@ -389,7 +452,7 @@ class TestFindDiscussionLinkSearch(unittest.TestCase):
         self.addCleanup(resolver_patcher.stop)
         return page
 
-    def test_uses_one_site_query_per_engine(self):
+    def test_uses_exact_exam_phrase_without_site_operator(self):
         seen = []
         page = self._page_returning(lambda engine, query: [], seen)
         _HARVESTED_LINKS.clear()
@@ -398,8 +461,15 @@ class TestFindDiscussionLinkSearch(unittest.TestCase):
         self.assertIs(result, NO_DISCUSSION_MISSING)
         self.assertEqual([engine for engine, _ in seen], ["duckduckgo", "google"])
         self.assertEqual(len(seen), 2)
-        self.assertTrue(all("site:examtopics.com" in query for _, query in seen))
-        self.assertTrue(all('"ccaak"' not in query for _, query in seen))
+        self.assertEqual([query for _, query in seen], ['"ccaak" topic 1 question 108 discussion'] * 2)
+        self.assertTrue(all("site:" not in query for _, query in seen))
+
+    def test_discussion_search_uses_exam_code_as_exact_phrase(self):
+        seen = []
+        page = self._page_returning(lambda engine, query: [], seen)
+        _HARVESTED_LINKS.clear()
+        find_discussion_link(page, "h13-624-v5-5", 1, 2)
+        self.assertEqual(seen[0][1], '"h13-624-v5-5" topic 1 question 2 discussion')
 
     def test_google_runs_only_after_duckduckgo_has_no_matching_link(self):
         seen = []
@@ -569,6 +639,15 @@ class TestDeterministicResolver(unittest.TestCase):
         with patch.object(self.R, "fetch_html", return_value=html):
             self.assertIsNone(self.R.discover_category("hqt-4180"))
 
+    def test_remember_category_from_live_discussion_url(self):
+        url = ("https://www.examtopics.com/discussions/huawei/view/306412-"
+               "exam-h13-624-v5-5-topic-1-question-1-discussion/")
+        self.assertEqual(
+            self.R.remember_category_from_discussion_url("h13-624-v5-5", url),
+            "huawei",
+        )
+        self.assertEqual(self.R.CATEGORY["h13624v55"], "huawei")
+
     # -- harvest listing -------------------------------------------------
     def test_harvest_listing_indexes_real_urls(self):
         """Moi muc trong trang liet ke vendor phai duoc ghi thanh URL that."""
@@ -599,9 +678,38 @@ class TestDeterministicResolver(unittest.TestCase):
             self.R.harvest_listing("hitachi")
         self.assertEqual(mock.call_count, 1)
 
+    def test_harvest_listing_honors_more_than_default_page_limit(self):
+        page1 = (
+            '<a href="/discussions/huawei/view/1-exam-h13-624-v5-5-topic-1-question-1-discussion/">q1</a>'
+            '<span>Page <strong>1</strong> of <strong>31</strong></span>'
+        )
+        page31 = (
+            '<a href="/discussions/huawei/view/31-exam-h13-624-v5-5-topic-1-question-2-discussion/">q2</a>'
+            '<span>Page <strong>31</strong> of <strong>31</strong></span>'
+        )
+        def fake(url, params=None, timeout=25):
+            return page1 if url.endswith('/1/') else page31 if url.endswith('/31/') else page1
+        with patch.object(self.R, "fetch_html", side_effect=fake) as fetch:
+            self.R.harvest_listing("huawei")
+        self.assertEqual(fetch.call_count, 31)
+        self.assertIn((1, 2), self.R.INDEX["h13624v55"])
+
+
     def test_harvest_listing_handles_empty_page(self):
         with patch.object(self.R, "fetch_html", return_value="<html></html>"):
             self.assertEqual(self.R.harvest_listing("hitachi"), 0)
+        self.assertIn("hitachi", self.R._HARVESTED)
+
+    def test_partial_listing_scan_remains_retryable(self):
+        page1 = (
+            '<a href="/discussions/huawei/view/1-exam-h13-624-v5-5-topic-1-question-1-discussion/">q1</a>'
+            '<span>Page <strong>1</strong> of <strong>3</strong></span>'
+        )
+        with patch.object(self.R, "fetch_html", side_effect=[page1, None]):
+            self.R.harvest_listing("huawei")
+        self.assertNotIn("huawei", self.R._HARVESTED)
+
+
 
     def test_harvest_listing_does_not_rescan_same_category(self):
         """Quet lai cung category la lang phi: cau khong co trong listing se
@@ -687,6 +795,34 @@ class TestDeterministicResolver(unittest.TestCase):
             '<div id="qqq3"><div>no answer here</div></div>'
         )
         self.assertEqual(self.R._parse_answer_key(html), {1: "AD", 2: "BDE"})
+
+    def test_answer_key_loads_category_from_discussion_url(self):
+        discussion = (
+            "https://www.examtopics.com/discussions/huawei/view/306412-"
+            "exam-h13-624-v5-5-topic-1-question-1-discussion/"
+        )
+        html = '<div id="qqq1">Correct Answer: <strong>D</strong></div>'
+        expected_url = "https://www.examtopics.com/exams/huawei/h13-624-v5-5/view/1/"
+        with patch.object(self.R, "fetch_html", return_value=html) as fetch:
+            key = self.R.answer_key_from_discussion("h13-624-v5-5", discussion)
+        self.assertEqual(key, {1: "D"})
+        self.assertEqual(self.R.CATEGORY["h13624v55"], "huawei")
+        self.assertEqual(self.R.ANSWER_KEY["h13624v55"], {1: "D"})
+        fetch.assert_called_once_with(expected_url)
+
+    def test_partial_cached_answer_key_is_completed_from_exam_page(self):
+        code = "h13624v55"
+        self.R.CATEGORY[code] = "huawei"
+        self.R.ANSWER_KEY[code] = {1: "D"}
+        html = (
+            '<div id="qqq1">Correct Answer: <strong>D</strong></div>'
+            '<div id="qqq2">Correct Answer: <strong>B</strong></div>'
+        )
+        with patch.object(self.R, "fetch_html", return_value=html) as fetch:
+            key = self.R.exam_answer_key("h13-624-v5-5")
+        self.assertEqual(key, {1: "D", 2: "B"})
+        self.assertEqual(self.R.ANSWER_KEY[code], {1: "D", 2: "B"})
+        fetch.assert_called_once()
 
     # -- persistence -----------------------------------------------------
     def test_index_persists_across_runs(self):
@@ -834,6 +970,151 @@ class TestProxyConfiguration(unittest.TestCase):
         tab = MagicMock()
         with patch("examtopic.resolver.fetch_html_status", return_value=(None, 429)):
             self.assertFalse(load_discussion_via_http(tab, "https://x.test"))
+
+
+class TestBrowserBackend(unittest.TestCase):
+    def test_proxy_url_is_converted_to_playwright_mapping(self):
+        from browser_backend import playwright_proxy
+        got = playwright_proxy("http://user%40mail:pa%3Ass@proxy.example:8080")
+        self.assertEqual(got, {
+            "server": "http://proxy.example:8080",
+            "username": "user@mail",
+            "password": "pa:ss",
+        })
+
+    def test_proxy_without_credentials_keeps_server_only(self):
+        from browser_backend import playwright_proxy
+        self.assertEqual(
+            playwright_proxy("socks5://127.0.0.1:1080"),
+            {"server": "socks5://127.0.0.1:1080"},
+        )
+
+    def test_ipv6_proxy_server_keeps_brackets(self):
+        from browser_backend import playwright_proxy
+        self.assertEqual(
+            playwright_proxy("http://user:pass@[2001:db8::1]:8080"),
+            {
+                "server": "http://[2001:db8::1]:8080",
+                "username": "user",
+                "password": "pass",
+            },
+        )
+
+    def test_camoufox_launch_uses_playwright_compatible_options(self):
+        import browser_backend
+        DefaultAddons = browser_backend.DefaultAddons
+        fake_browser = MagicMock()
+        manager = MagicMock()
+        manager.__enter__.return_value = fake_browser
+        with (
+            patch.object(browser_backend, "Camoufox", return_value=manager) as factory,
+            patch.object(browser_backend, "_camoufox_os", return_value="linux"),
+            patch.dict("os.environ", {
+                "CAMOUFOX_EXECUTABLE_PATH": "/tmp/camoufox",
+                "CAMOUFOX_GEOIP": "true",
+            }),
+        ):
+            handle = browser_backend.launch_browser(
+                "camoufox", headless=True,
+                proxy="http://user:pass@proxy.example:8080",
+            )
+        factory.assert_called_once_with(
+            headless=True,
+            humanize=True,
+            os="linux",
+            exclude_addons=[DefaultAddons.UBO],
+            executable_path="/tmp/camoufox",
+            proxy={"server": "http://proxy.example:8080", "username": "user", "password": "pass"},
+            geoip=True,
+        )
+        self.assertIs(handle.new_context(), fake_browser.new_context.return_value)
+        handle.close()
+        manager.__exit__.assert_called_once_with(None, None, None)
+
+    def test_camoufox_proxy_does_not_require_geoip_by_default(self):
+        import browser_backend
+        manager = MagicMock()
+        manager.__enter__.return_value = MagicMock()
+        with (
+            patch.object(browser_backend, "Camoufox", return_value=manager) as factory,
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            browser_backend.launch_browser(
+                "camoufox", proxy="http://proxy.example:8080")
+        factory.assert_called_once_with(
+            headless=False,
+            humanize=True,
+            os=browser_backend._camoufox_os(),
+            exclude_addons=[browser_backend.DefaultAddons.UBO],
+            proxy={"server": "http://proxy.example:8080"},
+        )
+
+    def test_camoufox_proxy_enables_geoip_only_when_requested(self):
+        import browser_backend
+        manager = MagicMock()
+        manager.__enter__.return_value = MagicMock()
+        with (
+            patch.object(browser_backend, "Camoufox", return_value=manager) as factory,
+            patch.dict("os.environ", {"CAMOUFOX_GEOIP": "true"}, clear=True),
+        ):
+            browser_backend.launch_browser(
+                "camoufox", proxy="http://proxy.example:8080")
+        self.assertTrue(factory.call_args.kwargs["geoip"])
+
+    def test_camoufox_uses_host_os_without_proxy(self):
+        import browser_backend
+        DefaultAddons = browser_backend.DefaultAddons
+        manager = MagicMock()
+        manager.__enter__.return_value = MagicMock()
+        with (
+            patch.object(browser_backend, "Camoufox", return_value=manager) as factory,
+            patch.object(browser_backend, "_camoufox_os", return_value="macos"),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            browser_backend.launch_browser("camoufox", headless=False)
+        factory.assert_called_once_with(
+            headless=False,
+            humanize=True,
+            os="macos",
+            exclude_addons=[DefaultAddons.UBO],
+        )
+
+    def test_camoufox_os_maps_supported_host_names(self):
+        import browser_backend
+        with patch.object(browser_backend.platform, "system", return_value="Darwin"):
+            self.assertEqual(browser_backend._camoufox_os(), "macos")
+        with patch.object(browser_backend.platform, "system", return_value="Windows"):
+            self.assertEqual(browser_backend._camoufox_os(), "windows")
+        with patch.object(browser_backend.platform, "system", return_value="Linux"):
+            self.assertEqual(browser_backend._camoufox_os(), "linux")
+
+
+    def test_cloakbrowser_launch_keeps_existing_options(self):
+        import browser_backend
+        fake_browser = MagicMock()
+        with patch.object(browser_backend, "cloak_launch", return_value=fake_browser) as factory:
+            handle = browser_backend.launch_browser(
+                "cloakbrowser", headless=False, proxy=None, fingerprint_seed=12345,
+            )
+        factory.assert_called_once_with(
+            headless=False,
+            humanize=True,
+            stealth_args=False,
+            proxy=None,
+            args=[
+                "--no-sandbox", "--fingerprint=12345",
+                "--fingerprint-platform=macos", "--disable-dev-shm-usage",
+            ],
+        )
+        handle.close()
+        fake_browser.close.assert_called_once()
+
+    def test_parse_args_defaults_to_camoufox_and_accepts_cloakbrowser(self):
+        from tool import parse_args
+        with patch("sys.argv", ["tool.py"]):
+            self.assertEqual(parse_args().browser, "camoufox")
+        with patch("sys.argv", ["tool.py", "--browser", "cloakbrowser"]):
+            self.assertEqual(parse_args().browser, "cloakbrowser")
 
 
 class TestSearchTyping(unittest.TestCase):
@@ -1241,6 +1522,66 @@ class TestHttpRetryBackoff(unittest.TestCase):
         self.assertIsInstance(result, dict)
         self.assertEqual(result["url"], repaired)
         self.assertEqual([c.args[1] for c in fetch.call_args_list], [stale, repaired])
+
+    def test_official_answer_key_is_not_applied_to_other_topics(self):
+        from examtopic import resolver
+        from examtopic.crawler import crawl_one_question
+        live = ("https://www.examtopics.com/discussions/huawei/view/400001-"
+                "exam-h13-624-v5-5-topic-2-question-1-discussion/")
+        page = MagicMock()
+        tab = MagicMock()
+        tab.url = live
+        tab.evaluate.return_value = {
+            "question": "Topic two question one?",
+            "question_images": [],
+            "options": [{"letter": "A", "text": "A", "images": [], "is_correct": False}],
+            "answers": [],
+        }
+        page.context.new_page.return_value = tab
+        resolver.ANSWER_KEY["h13624v55"] = {1: "D"}
+        with (
+            patch("examtopic.crawler.find_discussion_link", return_value=live),
+            patch("examtopic.crawler.load_discussion_via_http_status", return_value=(True, 200)),
+        ):
+            result = crawl_one_question(page, "h13-624-v5-5", 2, 1)
+        self.assertEqual(result["suggested_answers"], [])
+
+    def test_live_discussion_category_loads_official_answer_for_first_page(self):
+        from examtopic import resolver
+        from examtopic.crawler import crawl_one_question
+        live = ("https://www.examtopics.com/discussions/huawei/view/306412-"
+                "exam-h13-624-v5-5-topic-1-question-1-discussion/")
+        page = MagicMock()
+        tab = MagicMock()
+        tab.url = live
+        tab.evaluate.return_value = {
+            "question": "Which statement is false?",
+            "question_images": [],
+            "options": [
+                {"letter": "A", "text": "a", "images": [], "is_correct": False},
+                {"letter": "D", "text": "d", "images": [], "is_correct": False},
+            ],
+            "answers": [],
+        }
+        page.context.new_page.return_value = tab
+        resolver.CATEGORY.clear()
+        resolver.ANSWER_KEY.clear()
+
+        def load_key(code, url):
+            self.assertEqual(code, "h13-624-v5-5")
+            self.assertEqual(url, live)
+            resolver.ANSWER_KEY["h13624v55"] = {1: "D"}
+            return resolver.ANSWER_KEY["h13624v55"]
+
+        with patch("examtopic.crawler.find_discussion_link", return_value=live), \
+             patch("examtopic.crawler.load_discussion_via_http_status", return_value=(True, 200)), \
+             patch("examtopic.crawler.resolver.answer_key_from_discussion", side_effect=load_key) as load_key_mock:
+            result = crawl_one_question(page, "h13-624-v5-5", 1, 1)
+
+        self.assertEqual(result["suggested_answers"], ["D"])
+        self.assertTrue(next(o for o in result["options"] if o["letter"] == "D")["is_correct"])
+        self.assertEqual(resolver.CATEGORY["h13624v55"], "huawei")
+        load_key_mock.assert_called_once_with("h13-624-v5-5", live)
 
     def test_load_discussion_429_does_fall_back_to_browser(self):
         """429 la loi TAM THOI -> van phai fallback browser (khong ket luan chet)."""
